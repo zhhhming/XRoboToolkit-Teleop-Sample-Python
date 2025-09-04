@@ -10,7 +10,7 @@
     
     <!-- Position control defaults for different joint types -->
     <default class="position">
-      <position ctrlrange="-6.2831 6.2831" kp="200" kv="100" forcerange="-99 99"/>
+      <position ctrlrange="-6.2831 6.2831" kp="500" kv="100" forcerange="-99 99"/>
       <default class="position_limited">
         <position ctrlrange="-3.1415 3.1415"/>
       </default>
@@ -51,7 +51,7 @@
       
       <body name="shoulder_link" pos="0 0 0.15643" quat="-3.67321e-06 -1 0 0">
         <inertial pos="-2.3e-05 -0.010364 -0.07336" quat="0.707051 0.0451246 -0.0453544 0.704263" mass="1.377" diaginertia="0.00488868 0.00457 0.00135132" />
-        <joint name="joint_1" pos="0 0 0" axis="0 0 1" range="-3.14 3.14" />
+        <joint name="joint_1" pos="0 0 0" axis="0 0 1" range="-3.1 3.1" />
         <geom type="mesh" rgba="0.75294 0.75294 0.75294 1" mesh="shoulder_link" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
         <geom type="mesh" rgba="0.75294 0.75294 0.75294 1" mesh="shoulder_link" />
         
@@ -98,7 +98,7 @@
 
   <actuator>
     <!-- Position control actuators -->
-    <position class="position" name="joint_1" joint="joint_1"/>
+    <position class="position_limited" name="joint_1" joint="joint_1"/>
     <position class="position_limited" name="joint_2" joint="joint_2"/>
     <position class="position_limited" name="joint_3" joint="joint_3"/>
     <position class="position_wrist" name="joint_4" joint="joint_4"/>
