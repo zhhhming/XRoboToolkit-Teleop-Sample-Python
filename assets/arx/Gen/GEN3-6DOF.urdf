@@ -1,4 +1,7 @@
+<?xml version="1.0"?>
 <robot name="GEN3-6DOF" version="1.0">
+  
+  <!-- Base Link -->
   <link name="base_link">
     <inertial>
       <origin xyz="-0.000648 -0.000166 0.084487" rpy="0 0 0" />
@@ -8,19 +11,21 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/base_link.STL" />
+        <mesh filename="meshes/base_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/base_link.STL" />
+        <mesh filename="meshes/base_link.STL" />
       </geometry>
     </collision>
   </link>
+
+  <!-- Shoulder Link -->
   <link name="shoulder_link">
     <inertial>
       <origin xyz="-2.3E-05 -0.010364 -0.07336" rpy="0 0 0" />
@@ -30,26 +35,31 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/shoulder_link.STL" />
+        <mesh filename="meshes/shoulder_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/shoulder_link.STL" />
+        <mesh filename="meshes/shoulder_link.STL" />
       </geometry>
     </collision>
   </link>
-  <joint name="joint_1" type="continuous">
+
+  <!-- Joint 1: Shoulder Pan -->
+  <joint name="joint_1" type="revolute">
     <origin xyz="0 0 0.15643" rpy="-3.1416 0.0 0.0" />
     <parent link="base_link" />
     <child link="shoulder_link" />
     <axis xyz="0 0 1" />
-    <limit effort="39" velocity="1.3963" />
+    <limit lower="-3.14" upper="3.14" effort="39" velocity="1.3963" />
+    <dynamics damping="0.01" friction="0.01" />
   </joint>
+
+  <!-- Bicep Link -->
   <link name="bicep_link">
     <inertial>
       <origin xyz="3.5E-05 -0.208207 -0.01889" rpy="0 0 0" />
@@ -59,26 +69,31 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/bicep_link.STL" />
+        <mesh filename="meshes/bicep_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/bicep_link.STL" />
+        <mesh filename="meshes/bicep_link.STL" />
       </geometry>
     </collision>
   </link>
+
+  <!-- Joint 2: Shoulder Lift -->
   <joint name="joint_2" type="revolute">
     <origin xyz="0 0.005375 -0.12838" rpy="1.5708 0.0 0.0" />
     <parent link="shoulder_link" />
     <child link="bicep_link" />
     <axis xyz="0 0 1" />
     <limit lower="-2.24" upper="2.24" effort="39" velocity="1.3963" />
+    <dynamics damping="0.01" friction="0.01" />
   </joint>
+
+  <!-- Forearm Link -->
   <link name="forearm_link">
     <inertial>
       <origin xyz="1.8E-05 0.076168 -0.01397" rpy="0 0 0" />
@@ -88,26 +103,31 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/forearm_link.STL" />
+        <mesh filename="meshes/forearm_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/forearm_link.STL" />
+        <mesh filename="meshes/forearm_link.STL" />
       </geometry>
     </collision>
   </link>
+
+  <!-- Joint 3: Elbow -->
   <joint name="joint_3" type="revolute">
     <origin xyz="0 -0.41 0" rpy="3.1416 0 0" />
     <parent link="bicep_link" />
     <child link="forearm_link" />
     <axis xyz="0 0 1" />
     <limit lower="-2.57" upper="2.57" effort="39" velocity="1.3963" />
+    <dynamics damping="0.01" friction="0.01" />
   </joint>
+
+  <!-- Spherical Wrist 1 Link -->
   <link name="spherical_wrist_1_link">
     <inertial>
       <origin xyz="-1E-06 0.008486 -0.062937" rpy="0 0 0" />
@@ -117,26 +137,31 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/spherical_wrist_1_link.STL" />
+        <mesh filename="meshes/spherical_wrist_1_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/spherical_wrist_1_link.STL" />
+        <mesh filename="meshes/spherical_wrist_1_link.STL" />
       </geometry>
     </collision>
   </link>
-  <joint name="joint_4" type="continuous">
+
+  <!-- Joint 4: Wrist 1 -->
+  <joint name="joint_4" type="revolute">
     <origin xyz="0 0.20843 -0.006375" rpy="1.5708 0.0 0.0" />
     <parent link="forearm_link" />
     <child link="spherical_wrist_1_link" />
     <axis xyz="0 0 1" />
-    <limit effort="9" velocity="1.2218" />
+    <limit lower="-3.14" upper="3.14" effort="9" velocity="1.2218" />
+    <dynamics damping="0.01" friction="0.01" />
   </joint>
+
+  <!-- Spherical Wrist 2 Link -->
   <link name="spherical_wrist_2_link">
     <inertial>
       <origin xyz="-1E-06 0.046429 -0.008704" rpy="0 0 0" />
@@ -146,26 +171,31 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/spherical_wrist_2_link.STL" />
+        <mesh filename="meshes/spherical_wrist_2_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/spherical_wrist_2_link.STL" />
+        <mesh filename="meshes/spherical_wrist_2_link.STL" />
       </geometry>
     </collision>
   </link>
+
+  <!-- Joint 5: Wrist 2 -->
   <joint name="joint_5" type="revolute">
     <origin xyz="0 -0.00017505 -0.10593" rpy="-1.5708 0.0 0.0" />
     <parent link="spherical_wrist_1_link" />
     <child link="spherical_wrist_2_link" />
     <axis xyz="0 0 1" />
     <limit lower="-2.09" upper="2.09" effort="9" velocity="1.2218" />
+    <dynamics damping="0.01" friction="0.01" />
   </joint>
+
+  <!-- Bracelet Link (End Effector) -->
   <link name="bracelet_link">
     <inertial>
       <origin xyz="0.000281 0.011402 -0.029798" rpy="0 0 0" />
@@ -175,55 +205,28 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/bracelet_with_vision_link.STL" />
+        <mesh filename="meshes/bracelet_with_vision_link.STL" />
       </geometry>
-      <material name="">
+      <material name="gen3_gray">
         <color rgba="0.75294 0.75294 0.75294 1" />
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="D:/xrobotics/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/meshes/bracelet_with_vision_link.STL" />
+        <mesh filename="meshes/bracelet_with_vision_link.STL" />
       </geometry>
     </collision>
   </link>
-  <joint name="joint_6" type="continuous">
+
+  <!-- Joint 6: Wrist 3 -->
+  <joint name="joint_6" type="revolute">
     <origin xyz="0 0.10593 -0.00017505" rpy="1.5708 0.0 0.0" />
     <parent link="spherical_wrist_2_link" />
     <child link="bracelet_link" />
     <axis xyz="0 0 1" />
-    <limit effort="9" velocity="1.2218" />
+    <limit lower="-3.14" upper="3.14" effort="9" velocity="1.2218" />
+    <dynamics damping="0.01" friction="0.01" />
   </joint>
-  <link name="end_effector_link">
-    <inertial>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0" />
-      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
-    </inertial>
-  </link>
-  <joint name="end_effector" type="fixed">
-    <origin xyz="0 0 -0.061525" rpy="3.1416 0 -3.1416" />
-    <parent link="bracelet_link" />
-    <child link="end_effector_link" />
-    <axis xyz="0 0 0" />
-  </joint>
-  <link name="camera_link" />
-  <joint name="camera_module" type="fixed">
-    <origin xyz="0 0.05639 -0.00305" rpy="3.14159265358979 3.14159265358979 0" />
-    <parent link="end_effector_link" />
-    <child  link="camera_link" />
-  </joint>
-  <link name="camera_depth_frame" />
-  <joint name="depth_module" type="fixed">
-    <origin xyz="0.0275 0.066 -0.00305" rpy="3.14159265358979 3.14159265358979 0" />
-    <parent link="end_effector_link" />
-    <child  link="camera_depth_frame" />
-  </joint>
-  <link name="camera_color_frame" />
-  <joint name="color_module" type="fixed">
-    <origin xyz="0 0.05639 -0.00305" rpy="3.14159265358979 3.14159265358979 0" />
-    <parent link="end_effector_link" />
-    <child  link="camera_color_frame" />
-  </joint>
+
 </robot>
