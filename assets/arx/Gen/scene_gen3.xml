@@ -1,0 +1,38 @@
+<mujoco model="gen3_scene">
+  <include file="GEN3-6DOF.xml"/>
+
+  <statistic center="0 0 0.5" extent="1.5" meansize="0.08"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.2 0.2 0.2" specular="0.1 0.1 0.1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".2 .3 .4" rgb2=".1 0.15 0.2" width="512" height="512"
+             mark="cross" markrgb=".8 .8 .8"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" directional="true"/>
+    <geom name="floor" type="plane" size="2 2 0.01" material="grid"/>
+
+    <!-- 世界坐标系辅助箭头 -->
+    <geom name="world_x" type="cylinder" size="0.01 0.1" pos="0.1 0 0.0" zaxis="1 0 0" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+    <geom name="world_y" type="cylinder" size="0.01 0.1" pos="0 0.1 0.0" zaxis="0 1 0" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+    <geom name="world_z" type="cylinder" size="0.01 0.2" pos="0 0 0.2" zaxis="0 0 1" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+
+    <!-- mocap target，用于控制末端执行器目标位姿 -->
+    <body name="gen3_target" pos="0.5 0 0.5" quat="1 0 0 0" mocap="true">
+      <!-- X轴红 -->
+      <geom name="gen3_target_x" type="cylinder" size="0.005 0.05" pos="0.05 0 0" zaxis="1 0 0" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      <!-- Y轴绿 -->
+      <geom name="gen3_target_y" type="cylinder" size="0.005 0.05" pos="0 0.05 0" zaxis="0 1 0" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      <!-- Z轴蓝 -->
+      <geom name="gen3_target_z" type="cylinder" size="0.005 0.05" pos="0 0 0.05" zaxis="0 0 1" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      <!-- 小球标记 -->
+      <site name="gen3_target_site" type="sphere" size="0.01" rgba="0 0 1 1"/>
+    </body>
+  </worldbody>
+</mujoco>
