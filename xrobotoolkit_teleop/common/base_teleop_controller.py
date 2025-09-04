@@ -192,15 +192,15 @@ class BaseTeleopController(abc.ABC):
             if self.active[src_name]:
                 if self.ref_ee_xyz[src_name] is None:
                     print(f"{src_name} is activated.")
-                    self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])
+                    self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])#获取当前的机械臂姿态
 
                 xr_pose = self.xr_client.get_pose_by_name(config["pose_source"])
-                delta_xyz, delta_rot = self._process_xr_pose(xr_pose, src_name)
+                delta_xyz, delta_rot = self._process_xr_pose(xr_pose, src_name)#获取控制器相对运动
                 
                 if self.effector_control_mode[src_name] == "position":
                     # Position-only control: only apply position delta
-                    target_xyz = self.ref_ee_xyz[src_name] + delta_xyz
-                    self.effector_task[src_name].target_world = target_xyz
+                    target_xyz = self.ref_ee_xyz[src_name] + delta_xyz#结合当前机械臂姿态更新目标
+                    self.effector_task[src_name].target_world = target_xyz#设定目标
                 else:
                     # Full pose control: apply both position and orientation deltas
                     target_xyz, target_quat = apply_delta_pose(
@@ -212,7 +212,7 @@ class BaseTeleopController(abc.ABC):
                     target_pose = tf.quaternion_matrix(target_quat)
                     target_pose[:3, 3] = target_xyz
                     self.effector_task[src_name].T_world_frame = target_pose
-            else:
+            else:#没按下trigger就取消追踪了，把控制器的参考位置也删掉，要不下次按下trigger，这个控制器相对运动一下就很大，每次按下trigger，都以当时为初始姿态
                 if self.ref_ee_xyz[src_name] is not None:
                     print(f"{src_name} is deactivated.")
                     self.ref_ee_xyz[src_name] = None
@@ -222,7 +222,7 @@ class BaseTeleopController(abc.ABC):
         self._update_motion_tracker_tasks()
 
         try:
-            self.solver.solve(True)
+            self.solver.solve(True)#是solve完后，placo state q就更新了吗
         except RuntimeError as e:
             print(f"IK solver failed: {e}")
 

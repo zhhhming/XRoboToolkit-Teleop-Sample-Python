@@ -71,7 +71,8 @@ class MujocoTeleopController(BaseTeleopController):
         else:
             self.mj_data.qpos[:] = self.mj_qpos_init
             self.mj_data.ctrl[:] = calc_mujoco_ctrl_from_qpos(self.mj_model, self.mj_qpos_init)
-        mujoco.mj_forward(self.mj_model, self.mj_data)
+        #设定机械臂的初始姿态
+        mujoco.mj_forward(self.mj_model, self.mj_data)#更新
 
         # setup mocap target
         for name, config in self.manipulator_config.items():
@@ -79,18 +80,18 @@ class MujocoTeleopController(BaseTeleopController):
                 print(f"Warning: 'vis_target' not found in config for {name}. Skipping mocap setup.")
                 continue
             vis_target = config["vis_target"]
-            mocap_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, vis_target)
+            mocap_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, vis_target)#由名字找id，每个link都有id
             if mocap_id == -1:
                 raise ValueError(f"Mocap body '{vis_target}' not found in the model.")
 
             if self.mj_model.body_mocapid[mocap_id] == -1:
                 raise ValueError(f"Body '{self.vis_target}' is not configured for mocap.")
             else:
-                self.target_mocap_idx[name] = self.mj_model.body_mocapid[mocap_id]
+                self.target_mocap_idx[name] = self.mj_model.body_mocapid[mocap_id]#返回的是mocap体的索引，mocap非实体，仅用于标明目标位置，应该就类似于一个小的坐标系
 
             print(f"Mocap ID for '{vis_target}' body: {self.target_mocap_idx[name]}")
 
-    def _send_command(self):
+    def _send_command(self):#依据placo更新的state q得到仿真机械臂的关节目标位置，再转为执行器的目标
         qpos_desired = calc_mujoco_qpos_from_placo_q(
             self.mj_model,
             self.placo_robot,
@@ -109,11 +110,11 @@ class MujocoTeleopController(BaseTeleopController):
                 if not success:
                     raise ValueError(f"Joint '{gripper_name}' not found in MuJoCo model.")
 
-        self.mj_data.ctrl = calc_mujoco_ctrl_from_qpos(self.mj_model, qpos_desired)
+        self.mj_data.ctrl = calc_mujoco_ctrl_from_qpos(self.mj_model, qpos_desired)#位置伺服的，应该就复制粘贴下就好
 
         if self.visualize_placo:
             self._update_placo_viz()
-
+#将mujoco机械臂状态复制给placo model
     def _update_robot_state(self):
         mj_qpos = self.mj_data.qpos.copy()
         self.placo_robot.state.q = calc_placo_q_from_mujoco_qpos(
@@ -123,7 +124,7 @@ class MujocoTeleopController(BaseTeleopController):
             floating_base=self.floating_base,
         )
         self.placo_robot.update_kinematics()
-
+#更新用于显示目标位置的小坐标系的位置
     def _update_mocap_target(self):
         for name, task in self.effector_task.items():
             T_world_target = task.T_world_frame
@@ -131,7 +132,7 @@ class MujocoTeleopController(BaseTeleopController):
             if mocap_idx is not None and mocap_idx != -1:
                 self.mj_data.mocap_pos[mocap_idx] = T_world_target[:3, 3]
                 self.mj_data.mocap_quat[mocap_idx] = tf.quaternion_from_matrix(T_world_target)
-
+#用于获取仿真机械臂末端执行器位置
     def _get_link_pose(self, ee_name):
         """Get the end effector position and orientation."""
         ee_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, ee_name)
@@ -153,14 +154,14 @@ class MujocoTeleopController(BaseTeleopController):
 
             while not self._stop_event.is_set():
                 try:
-                    self._update_robot_state()
-                    self._update_ik()
-                    self._update_gripper_target()
-                    self._update_mocap_target()
-                    self._send_command()
+                    self._update_robot_state()#调整placo与mujoco模型一致
+                    self._update_ik()#获取控制器运动信息，控制placo机械臂移动至对应位置，获取到目标关节信息
+                    self._update_gripper_target()#获取夹爪的目标位置
+                    self._update_mocap_target()#更新mujoco中用于显示手持控制器的小坐标系的位置，即机械臂目标的位置
+                    self._send_command()#位置伺服，依据stateq获得各个执行器的运动指令
 
                     # Step simulation and update viewer
-                    mujoco.mj_step(self.mj_model, self.mj_data)
+                    mujoco.mj_step(self.mj_model, self.mj_data)#mujoco按指令运动
                     viewer.sync()
                 except KeyboardInterrupt:
                     print("\nTeleoperation stopped.")
