@@ -10,12 +10,12 @@
     
     <!-- Position control defaults for different joint types -->
     <default class="position">
-      <position ctrlrange="-6.2831 6.2831" kp="2000" kv="100" forcerange="-39 39"/>
+      <position ctrlrange="-6.2831 6.2831" kp="200" kv="100" forcerange="-99 99"/>
       <default class="position_limited">
         <position ctrlrange="-3.1415 3.1415"/>
       </default>
       <default class="position_wrist">
-        <position kp="500" kv="25" forcerange="-9 9"/>
+        <position kp="500" kv="25" forcerange="-39 39"/>
       </default>
     </default>
     
@@ -132,8 +132,8 @@
   <keyframe>
     <!-- Home position - arms at comfortable pose -->
     <key name="home"
-         qpos="0 -1.57 1.57 -1.57 0 0 "
-         ctrl="0 -1.57 1.57 -1.57 0 0"/>
+         qpos="0 -1.57 -1.57 -1.57 0 0 "
+         ctrl="0 -1.57 -1.57 -1.57 0 0"/>
     
     <!-- Zero position - all joints at zero -->
     <key name="zero"

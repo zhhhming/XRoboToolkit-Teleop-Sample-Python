@@ -3,7 +3,7 @@ import mujoco.viewer
 
 def main():
     # 载入你的 XML 文件
-    xml_path = "D:\\xrobotics\\XRoboToolkit-Teleop-Sample-Python\\assets\\arx\\Gen\\scene_gen3.xml"   # 替换成你的路径
+    xml_path = "/home/ming/xrrobotics_new/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/scene_gen3.xml"   # 替换成你的路径
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
@@ -16,12 +16,13 @@ def main():
     print("\nBody names:")
     for i in range(model.nbody):
         print(f"  {i}: {model.body(i).name}")
-
+    mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
     # 启动viewer展示模型
     print("\nLaunching Mujoco viewer...")
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             mujoco.mj_step(model, data)
+            mujoco.mj_forward(model,data)
             viewer.sync()
 
 if __name__ == "__main__":

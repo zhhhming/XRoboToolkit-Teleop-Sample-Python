@@ -8,8 +8,8 @@ from xrobotoolkit_teleop.utils.path_utils import ASSET_PATH
 
 
 def main(
-    xml_path: str = os.path.join(ASSET_PATH, "arx/Gen/scene_gen3.xml"),
-    robot_urdf_path: str = os.path.join(ASSET_PATH, "arx/Gen/GEN3-6DOF.urdf"),
+    xml_path: str = "/home/ming/xrrobotics_new/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/scene_gen3.xml",
+    robot_urdf_path: str = "/home/ming/xrrobotics_new/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/GEN3-6DOF.urdf",
     scale_factor: float = 1.5,#不清楚
     visualize_placo: bool = True,
 ):
