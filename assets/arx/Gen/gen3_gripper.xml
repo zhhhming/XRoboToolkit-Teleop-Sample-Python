@@ -1,0 +1,241 @@
+<mujoco model="gen3_robotiq_2f_85">
+  <compiler angle="radian" meshdir="meshes" autolimits="true" eulerseq="zyx"/>
+  <option integrator="implicitfast" timestep="0.001" gravity="0 0 -9.81" />
+  <default>
+    <default class="robot">
+      <joint axis="0 0 1" range="-3.1415 3.1415" damping="0.01" armature="0.01" frictionloss="0.01" ref="0.0"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom type="capsule" group="3"/>
+      </default>
+      <default class="position">
+        <position ctrlrange="-3.1415 3.1415" kp="5000" kv="140" forcerange="-150 150"/>
+        <default class="position_unlimited">
+          <position ctrlrange="-6.2831 6.2831"/>
+        </default>
+        <default class="position_wrist">
+          <position kp="1200" kv="70" forcerange="-70 370"/>
+        </default>
+      </default>
+      <default class="gripper_geom">
+        <geom contype="2" conaffinity="1"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="gen3_gray" rgba="0.75294 0.75294 0.75294 1" />
+    <material name="default_material" rgba="0.7 0.7 0.7 1" />
+    <material name="collision_material" rgba="1.0 0.28 0.1 0.9" />
+    <mesh name="base_link.STL" file="base_link.STL" />
+    <mesh name="shoulder_link.STL" file="shoulder_link.STL" />
+    <mesh name="bicep_link.STL" file="bicep_link.STL" />
+    <mesh name="forearm_link.STL" file="forearm_link.STL" />
+    <mesh name="spherical_wrist_1_link.STL" file="spherical_wrist_1_link.STL" />
+    <mesh name="spherical_wrist_2_link.STL" file="spherical_wrist_2_link.STL" />
+    <mesh name="bracelet_with_vision_link.STL" file="bracelet_with_vision_link.STL" />
+    <mesh name="robotiq_arg2f_base_link.stl" file="robotiq_arg2f_base_link.stl" />
+    <mesh name="robotiq_arg2f_85_outer_knuckle.stl" file="robotiq_arg2f_85_outer_knuckle_bin.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_outer_finger.stl" file="robotiq_arg2f_85_outer_finger_bin.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_inner_finger.stl" file="robotiq_arg2f_85_inner_finger_bin.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_inner_knuckle.stl" file="robotiq_arg2f_85_inner_knuckle_bin.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+
+  <worldbody>
+    <body name="base_link" pos="0.00000000 0.00000000 0.00000000" quat="1 0 0 0" childclass="robot">
+      <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="base_link.STL" class="collision" />
+      <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="base_link.STL" class="visual" />
+      
+      <body name="shoulder_link" pos="0 0 0.15643" quat="-3.673205103346574e-06 -0.9999999999932537 -0.0 0.0">
+        <joint name="joint_1" />
+        <inertial pos="-2.3E-05 -0.010364 -0.07336" quat="1.0 0.0 0.0 0.0" mass="1.377" diaginertia="0.00457 0.004831 0.001409" />
+        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="shoulder_link.STL" class="collision" />
+        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="shoulder_link.STL" class="visual" />
+        
+        <body name="bicep_link" pos="0 0.005375 -0.12838" quat="0.7071054825112363 0.7071080798594735 0.0 0.0">
+          <joint name="joint_2" range="-2.24 2.24"/>
+          <inertial pos="3.5E-05 -0.208207 -0.01889" quat="1.0 0.0 0.0 0.0" mass="1.262" diaginertia="0.046752 0.00085 0.047188" />
+          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="bicep_link.STL" class="collision" />
+          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="bicep_link.STL" class="visual" />
+          
+          <body name="forearm_link" pos="0 -0.41 0" quat="-3.673205103346574e-06 0.9999999999932537 0.0 -0.0">
+            <joint name="joint_3" range="-2.57 2.57"/>
+            <inertial pos="1.8E-05 0.076168 -0.01397" quat="1.0 0.0 0.0 0.0" mass="0.93" diaginertia="0.008292 0.000628 0.008464" />
+            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="forearm_link.STL" class="collision" />
+            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="forearm_link.STL" class="visual" />
+            
+            <body name="spherical_wrist_1_link" pos="0 0.20843 -0.006375" quat="0.7071054825112363 0.7071080798594735 0.0 0.0">
+              <joint name="joint_4"/>
+              <inertial pos="-1E-06 0.008486 -0.062937" quat="1.0 0.0 0.0 0.0" mass="0.6781" diaginertia="0.001645 0.001666 0.000389" />
+              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="spherical_wrist_1_link.STL" class="collision" />
+              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="spherical_wrist_1_link.STL" class="visual" />
+              
+              <body name="spherical_wrist_2_link" pos="0 -0.00017505 -0.10593" quat="0.7071054825112363 -0.7071080798594735 0.0 0.0">
+                <joint name="joint_5" range="-2.09 2.09"/>
+                <inertial pos="-1E-06 0.046429 -0.008704" quat="1.0 0.0 0.0 0.0" mass="0.678" diaginertia="0.001685 0.0004 0.001696" />
+                <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="spherical_wrist_2_link.STL" class="collision" />
+                <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="spherical_wrist_2_link.STL" class="visual" />
+                
+                <body name="bracelet_link" pos="0 0.10593 -0.00017505" quat="0.7071054825112363 0.7071080798594735 0.0 0.0">
+                  <joint name="joint_6"/>
+                  <inertial pos="0.000281 0.011402 -0.029798" quat="1.0 0.0 0.0 0.0" mass="0.5" diaginertia="0.000587 0.000369 0.000609" />
+                  <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="bracelet_with_vision_link.STL" class="collision" />
+                  <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="bracelet_with_vision_link.STL" class="visual" />
+                  
+                  <body name="end_effector_link" pos="0 0 -0.0615250000000001" quat="2.6154811257369865e-30 1.6155445744325867e-15 1.0 1.6155445744325867e-15">
+                    
+                    <body name="robotiq_arg2f_base_link" pos="0.0 0.0 0.0" quat="0.7073882691671998 0.0 0.0 0.706825181105366">
+                      <inertial pos="8.625E-08 -4.6583E-06 0.03145" quat="1.0 0.0 0.0 0.0" mass="0.22652" diaginertia="0.00020005 0.00017832 0.00013478" />
+                      <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_base_link.stl" class="collision" />
+                      <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_base_link.stl" class="visual" />
+                      
+                      <body name="left_outer_knuckle" pos="0 -0.0306011 0.054904" quat="6.123233995736766e-17 0.0 0.0 1.0">
+                        <joint name="left_outer_knuckle" range="0 0.8" axis="1 0 0" />
+                        <inertial pos="-0.000200000000003065 0.0199435877845359 0.0292245259211331" quat="1.0 0.0 0.0 0.0" mass="0.00853198276973456" diaginertia="2.89328108496468e-06 1.86719750325683e-06 1.21905238907251e-06" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_outer_knuckle.stl" class="collision" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_outer_knuckle.stl"  class="visual" />
+                        
+                        <body name="left_outer_finger" pos="0 0.0315 -0.0041" quat="1.0 0.0 0.0 0.0">
+                          <inertial pos="0.00030115855001899 0.0373907951953854 -0.0208027427000385" quat="1.0 0.0 0.0 0.0" mass="0.022614240507152" diaginertia="1.52518312458174e-05 6.17694243867776e-06 1.16494917907219e-05" />
+                          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_outer_finger.stl" class="collision" />
+                          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_outer_finger.stl"  class="visual" />
+                          
+                          <body name="left_inner_finger" pos="0 0.0061 0.0471" quat="1.0 0.0 0.0 0.0">
+                            <joint name="left_inner_finger" range="-0.8757 0.8757" axis="1 0 0" />
+                            <inertial pos="0.000299999999999317 0.0160078233491243 -0.0136945669206257" quat="1.0 0.0 0.0 0.0" mass="0.0104003125914103" diaginertia="2.71909453810972e-06 7.69100314106116e-07 2.30315190420171e-06" />
+                            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_inner_finger.stl" class="collision" />
+                            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_inner_finger.stl"  class="visual" />
+                            
+                            <body name="left_inner_finger_pad" pos="0 -0.0220203446692936 0.03242" quat="1.0 0.0 0.0 0.0">
+                              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="box" size="0.011 0.003175 0.01875" class="collision" />
+                              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="box" size="0.011 0.003175 0.01875" class="visual" />
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                      <body name="left_inner_knuckle" pos="0 -0.0127 0.06142" quat="6.123233995736766e-17 0.0 0.0 1.0">
+                        <joint name="left_inner_knuckle" range="0 0.8757" axis="1 0 0" />
+                        <inertial pos="0.000123011831763771 0.0507850843201817 0.00103968640075166" quat="1.0 0.0 0.0 0.0" mass="0.0271177346495152" diaginertia="2.61910379223783e-05 2.8270243746167e-06 2.83695868220296e-05" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_inner_knuckle.stl"  class="collision" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_inner_knuckle.stl"  class="visual" />
+                      </body>
+                      <body name="right_outer_knuckle" pos="0 0.0306011 0.054904" quat="1.0 0.0 0.0 0.0">
+                        <joint name="right_outer_knuckle" range="0 0.81" axis="1 0 0" />
+                        <inertial pos="-0.000200000000003065 0.0199435877845359 0.0292245259211331" quat="1.0 0.0 0.0 0.0" mass="0.00853198276973456" diaginertia="2.89328108496468e-06 1.86719750325683e-06 1.21905238907251e-06" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_outer_knuckle.stl"  class="collision" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_outer_knuckle.stl"  class="visual" />
+                        <body name="right_outer_finger" pos="0 0.0315 -0.0041" quat="1.0 0.0 0.0 0.0">
+                          <inertial pos="0.00030115855001899 0.0373907951953854 -0.0208027427000385" quat="1.0 0.0 0.0 0.0" mass="0.022614240507152" diaginertia="1.52518312458174e-05 6.17694243867776e-06 1.16494917907219e-05" />
+                          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_outer_finger.stl" class="collision" />
+                          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_outer_finger.stl"  class="visual" />
+                          <body name="right_inner_finger" pos="0 0.0061 0.0471" quat="1.0 0.0 0.0 0.0">
+                            <joint name="right_inner_finger" range="-0.8757 0.8757" axis="1 0 0" />
+                            <inertial pos="0.000299999999999317 0.0160078233491243 -0.0136945669206257" quat="1.0 0.0 0.0 0.0" mass="0.0104003125914103" diaginertia="2.71909453810972e-06 7.69100314106116e-07 2.30315190420171e-06" />
+                            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_inner_finger.stl" class="collision" />
+                            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="robotiq_arg2f_85_inner_finger.stl"  class="visual" />
+                            <body name="right_inner_finger_pad" pos="0 -0.0220203446692936 0.03242" quat="1.0 0.0 0.0 0.0">
+                              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="box" size="0.011 0.003175 0.01875" class="collision" />
+                              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="box" size="0.011 0.003175 0.01875" class="visual" />
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                      <body name="right_inner_knuckle" pos="0 0.0127 0.06142" quat="1.0 0.0 0.0 0.0">
+                        <joint name="right_inner_knuckle" range="0 0.8757" axis="1 0 0" />
+                        <inertial pos="0.000123011831763771 0.0507850843201817 0.00103968640075166" quat="1.0 0.0 0.0 0.0" mass="0.0271177346495152" diaginertia="2.61910379223783e-05 2.8270243746167e-06 2.83695868220296e-05" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="robotiq_arg2f_85_inner_knuckle.stl" class="collision" />
+                        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="" type="mesh" mesh="robotiq_arg2f_85_inner_knuckle.stl"  class="visual" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <site name="base_link_site" pos="0 0 0" quat="1 0 0 0" />
+      <camera name="front_camera" mode="track" fovy="90.0" quat="4.329780281177467e-17 4.329780281177466e-17 0.7071067811865475 0.7071067811865476" pos="0.0 2.0 0.5" />
+      <camera name="side_camera" mode="track" fovy="90.0" quat="-0.5 -0.4999999999999999 0.5 0.5000000000000001" pos="-2.0 0.0 0.5" />
+    </body>
+  </worldbody>
+
+  <equality>
+    <!-- 左侧关节耦合 -->
+    <joint name="left_outer_inner_knuckle" joint1="left_outer_knuckle" joint2="left_inner_knuckle" polycoef="0 1 0 0 0"/>
+    <joint name="left_outer_inner_finger" joint1="left_outer_knuckle" joint2="left_inner_finger" polycoef="0 -1 0 0 0"/>
+    
+    <!-- 右侧关节耦合 -->
+    <joint name="right_outer_inner_knuckle" joint1="left_outer_knuckle" joint2="right_outer_knuckle" polycoef="0 1 0 0 0"/>
+    <joint name="right_outer_right_inner_knuckle" joint1="left_outer_knuckle" joint2="right_inner_knuckle" polycoef="0 1 0 0 0"/>
+    <joint name="right_outer_right_inner_finger" joint1="left_outer_knuckle" joint2="right_inner_finger" polycoef="0 -1 0 0 0"/>
+  </equality>
+
+  <actuator>
+    <position name="joint_1" joint="joint_1" class="position" />
+    <position name="joint_2" joint="joint_2" class="position" />
+    <position name="joint_3" joint="joint_3" class="position" />
+    <position name="joint_4" joint="joint_4" class="position" />
+    <position name="joint_5" joint="joint_5" class="position" />
+    <position name="joint_6" joint="joint_6" class="position" />
+    <position name="left_outer_knuckle" joint="left_outer_knuckle" class="position" kp="500" kv="20" forcerange="-30 30"/>
+
+  </actuator>
+
+  <contact>
+    <exclude body1="base_link" body2="shoulder_link" />
+    <exclude body1="shoulder_link" body2="bicep_link" />
+    <exclude body1="bicep_link" body2="forearm_link" />
+    <exclude body1="forearm_link" body2="spherical_wrist_1_link" />
+    <exclude body1="spherical_wrist_1_link" body2="spherical_wrist_2_link" />
+    <exclude body1="spherical_wrist_2_link" body2="bracelet_link" />
+    <exclude body1="robotiq_arg2f_base_link" body2="left_outer_knuckle" />
+    <exclude body1="robotiq_arg2f_base_link" body2="left_outer_finger" />
+    <exclude body1="left_outer_knuckle" body2="left_outer_finger" />
+    <exclude body1="robotiq_arg2f_base_link" body2="left_inner_knuckle" />
+    <exclude body1="robotiq_arg2f_base_link" body2="left_inner_finger" />
+    <exclude body1="robotiq_arg2f_base_link" body2="left_inner_finger_pad" />
+    <exclude body1="left_outer_finger" body2="left_inner_finger" />
+    <exclude body1="left_inner_finger" body2="left_inner_finger_pad" />
+    <exclude body1="robotiq_arg2f_base_link" body2="right_outer_knuckle" />
+    <exclude body1="robotiq_arg2f_base_link" body2="right_outer_finger" />
+    <exclude body1="right_outer_knuckle" body2="right_outer_finger" />
+    <exclude body1="robotiq_arg2f_base_link" body2="right_inner_knuckle" />
+    <exclude body1="robotiq_arg2f_base_link" body2="right_inner_finger" />
+    <exclude body1="robotiq_arg2f_base_link" body2="right_inner_finger_pad" />
+    <exclude body1="right_outer_finger" body2="right_inner_finger" />
+    <exclude body1="right_inner_finger" body2="right_inner_finger_pad" />
+    <exclude body1="right_inner_knuckle" body2="right_inner_finger_pad" />
+    <exclude body1="left_inner_knuckle" body2="left_inner_finger_pad" />
+    <exclude body1="left_inner_finger" body2="left_inner_knuckle" />
+    <exclude body1="right_inner_finger" body2="right_inner_knuckle" />
+    <exclude body1="left_inner_finger_pad" body2="right_inner_finger_pad" />
+    <exclude body1="right_inner_finger_pad" body2="left_inner_knuckle" />
+    <exclude body1="left_inner_finger_pad" body2="right_inner_knuckle" />
+    <exclude body1="right_inner_finger_pad" body2="left_inner_finger" />
+    <exclude body1="left_inner_finger_pad" body2="right_inner_finger" />
+    <exclude body1="left_inner_finger" body2="right_inner_knuckle" />
+    <exclude body1="right_inner_finger" body2="left_inner_knuckle" />
+
+
+
+  </contact>
+  <keyframe>
+    <key name="home"
+         qpos="-1.42 -0.01 -1.76 -0.54 -0.79 2.44 0 0 0 0 0 0 "
+         ctrl="-1.42 -0.01 -1.76 -0.54 -0.79 2.44 0.7 "/>
+    <key name="zero"
+         qpos="0 0 0 0 0 0 0 0 0 0 0 0"
+         ctrl="0 0 0 0 0 0 0"/>
+  </keyframe>
+
+  <sensor>
+    <framepos name="base_link_site_pos" objtype="site" objname="base_link_site" />
+    <framequat name="base_link_site_quat" objtype="site" objname="base_link_site" />
+    <framelinvel name="base_link_site_linvel" objtype="site" objname="base_link_site" />
+    <frameangvel name="base_link_site_angvel" objtype="site" objname="base_link_site" />
+    <velocimeter name="base_link_site_vel" site="base_link_site" />
+  </sensor>
+</mujoco>    

@@ -1,0 +1,123 @@
+<mujoco model="GEN3-6DOF">
+  <compiler angle="radian" meshdir="meshes" autolimits="true" eulerseq="zyx"/>
+  <option integrator="implicitfast" timestep="0.001" gravity="0 0 -9.81" />
+  <default>
+    <default class="robot">
+      <joint axis="0 0 1" range="-3.1415 3.1415" damping="0.01" armature="0.01" frictionloss="0.01" ref="0.0"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom type="capsule" group="3"/>
+      </default>
+      <default class="position">
+        <position ctrlrange="-3.1415 3.1415" kp="5000" kv="140" forcerange="-150 150"/>
+        <default class="position_unlimited">
+          <position ctrlrange="-6.2831 6.2831"/>
+        </default>
+        <default class="position_wrist">
+          <position kp="1200" kv="70" forcerange="-70 370"/>
+        </default>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="gen3_gray" rgba="0.75294 0.75294 0.75294 1" />
+    <material name="default_material" rgba="0.7 0.7 0.7 1" />
+    <material name="collision_material" rgba="1.0 0.28 0.1 0.9" />
+    <mesh name="base_link.STL" file="base_link.STL" content_type="model/stl" />
+    <mesh name="shoulder_link.STL" file="shoulder_link.STL" content_type="model/stl" />
+    <mesh name="bicep_link.STL" file="bicep_link.STL" content_type="model/stl" />
+    <mesh name="forearm_link.STL" file="forearm_link.STL" content_type="model/stl" />
+    <mesh name="spherical_wrist_1_link.STL" file="spherical_wrist_1_link.STL" content_type="model/stl" />
+    <mesh name="spherical_wrist_2_link.STL" file="spherical_wrist_2_link.STL" content_type="model/stl" />
+    <mesh name="bracelet_with_vision_link.STL" file="bracelet_with_vision_link.STL" content_type="model/stl" />
+  </asset>
+
+  <worldbody>
+    <body name="base_link" pos="0.00000000 0.00000000 0.00000000" quat="1 0 0 0" childclass="robot">
+      <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="base_link.STL" class="collision" />
+      <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="base_link.STL" class="visual" />
+
+      <body name="shoulder_link" pos="0 0 0.15643" quat="-3.673205103346574e-06 -0.9999999999932537 -0.0 0.0">
+        <joint name="joint_1"/>
+        <inertial pos="-2.3E-05 -0.010364 -0.07336" quat="1.0 0.0 0.0 0.0" mass="1.377" diaginertia="0.00457 0.004831 0.001409" />
+        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="shoulder_link.STL" class="collision" />
+        <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="shoulder_link.STL" class="visual" />
+        
+        <body name="bicep_link" pos="0 0.005375 -0.12838" quat="0.7071054825112363 0.7071080798594735 0.0 0.0">
+          <joint name="joint_2" range="-2.24 2.24"/>
+          <inertial pos="3.5E-05 -0.208207 -0.01889" quat="1.0 0.0 0.0 0.0" mass="1.262" diaginertia="0.046752 0.00085 0.047188" />
+          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="bicep_link.STL" class="collision" />
+          <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="bicep_link.STL" class="visual" />
+          
+          <body name="forearm_link" pos="0 -0.41 0" quat="-3.673205103346574e-06 0.9999999999932537 0.0 -0.0">
+            <joint name="joint_3" range="-2.57 2.57"/>
+            <inertial pos="1.8E-05 0.076168 -0.01397" quat="1.0 0.0 0.0 0.0" mass="0.93" diaginertia="0.008292 0.000628 0.008464" />
+            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="forearm_link.STL" class="collision" />
+            <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="forearm_link.STL" class="visual" />
+            
+            <body name="spherical_wrist_1_link" pos="0 0.20843 -0.006375" quat="0.7071054825112363 0.7071080798594735 0.0 0.0">
+              <joint name="joint_4"/>
+              <inertial pos="-1E-06 0.008486 -0.062937" quat="1.0 0.0 0.0 0.0" mass="0.6781" diaginertia="0.001645 0.001666 0.000389" />
+              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="spherical_wrist_1_link.STL" class="collision" />
+              <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="spherical_wrist_1_link.STL" class="visual" />
+              
+              <body name="spherical_wrist_2_link" pos="0 -0.00017505 -0.10593" quat="0.7071054825112363 -0.7071080798594735 0.0 0.0">
+                <joint name="joint_5" range="-2.09 2.09"/>
+                <inertial pos="-1E-06 0.046429 -0.008704" quat="1.0 0.0 0.0 0.0" mass="0.678" diaginertia="0.001685 0.0004 0.001696" />
+                <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="spherical_wrist_2_link.STL" class="collision" />
+                <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="spherical_wrist_2_link.STL" class="visual" />
+                
+                <body name="bracelet_link" pos="0 0.10593 -0.00017505" quat="0.7071054825112363 0.7071080798594735 0.0 0.0">
+                  <joint name="joint_6"/>
+                  <inertial pos="0.000281 0.011402 -0.029798" quat="1.0 0.0 0.0 0.0" mass="0.5" diaginertia="0.000587 0.000369 0.000609" />
+                  <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="bracelet_with_vision_link.STL" class="collision" />
+                  <geom pos="0 0 0" quat="1.0 0.0 0.0 0.0" material="gen3_gray" type="mesh" mesh="bracelet_with_vision_link.STL" class="visual" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <site name="base_link_site" pos="0 0 0" quat="1 0 0 0" />
+      <camera name="front_camera" mode="track" fovy="90.0" quat="4.329780281177467e-17 4.329780281177466e-17 0.7071067811865475 0.7071067811865476" pos="0.0 2.0 0.5" />
+      <camera name="side_camera" mode="track" fovy="90.0" quat="-0.5 -0.4999999999999999 0.5 0.5000000000000001" pos="-2.0 0.0 0.5" />
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="joint_1" joint="joint_1" class="position" />
+    <position name="joint_2" joint="joint_2" class="position" />
+    <position name="joint_3" joint="joint_3" class="position" />
+    <position name="joint_4" joint="joint_4" class="position" />
+    <position name="joint_5" joint="joint_5" class="position" />
+    <position name="joint_6" joint="joint_6" class="position" />
+  </actuator>
+  <keyframe>
+    <key name="home"
+         qpos="-1.42 -0.01 -1.76 -0.54 -0.79 2.44"
+         ctrl="-1.42 -0.01 -1.76 -0.54 -0.79 2.44"/>
+    <key name="zero"
+         qpos="0 0 0 0 0 0"
+         ctrl="0 0 0 0 0 0"/>
+  </keyframe>
+
+  <contact>
+    <exclude body1="base_link" body2="shoulder_link" />
+    <exclude body1="shoulder_link" body2="bicep_link" />
+    <exclude body1="bicep_link" body2="forearm_link" />
+    <exclude body1="forearm_link" body2="spherical_wrist_1_link" />
+    <exclude body1="spherical_wrist_1_link" body2="spherical_wrist_2_link" />
+    <exclude body1="spherical_wrist_2_link" body2="bracelet_link" />
+  </contact>
+
+  <sensor>
+    <framepos name="base_link_site_pos" objtype="site" objname="base_link_site" />
+    <framequat name="base_link_site_quat" objtype="site" objname="base_link_site" />
+    <framelinvel name="base_link_site_linvel" objtype="site" objname="base_link_site" />
+    <frameangvel name="base_link_site_angvel" objtype="site" objname="base_link_site" />
+    <velocimeter name="base_link_site_vel" site="base_link_site" />
+  </sensor>
+</mujoco>

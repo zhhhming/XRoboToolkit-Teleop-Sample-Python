@@ -349,7 +349,6 @@ class BaseTeleopController(abc.ABC):
                 continue
 
             gripper_config = self.manipulator_config[gripper_name]["gripper_config"]
-            gripper_config = self.manipulator_config[gripper_name]["gripper_config"]
             gripper_type = gripper_config["type"]
             if gripper_type == "parallel":
                 trigger_value = self.xr_client.get_key_value_by_name(gripper_config["gripper_trigger"])
@@ -360,7 +359,6 @@ class BaseTeleopController(abc.ABC):
                 ):
                     # Calculate the target position based on the trigger value
                     gripper_pos = calc_parallel_gripper_position(open_pos, close_pos, trigger_value)
-                    self.gripper_pos_target[gripper_name][joint_name] = gripper_pos
                     self.gripper_pos_target[gripper_name][joint_name] = gripper_pos
             else:
                 # TODO: add dexterous hand support

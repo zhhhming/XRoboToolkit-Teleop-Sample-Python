@@ -187,7 +187,7 @@ def calc_mujoco_ctrl_from_qpos(mujoco_model: mujoco.MjModel, mujoco_qpos: np.nda
         # Assuming the actuator targets a joint (common case for robot arms)
         # and that the joint is 1-DOF.
         qpos_addr = mujoco_model.jnt_qposadr[target_id]
-
+        
         # Assign the corresponding qpos value to the control signal
         mujoco_ctrl[i] = mujoco_qpos[qpos_addr]
 

@@ -55,7 +55,7 @@
     <parent link="base_link" />
     <child link="shoulder_link" />
     <axis xyz="0 0 1" />
-    <limit lower="-3.14" upper="3.14" effort="39" velocity="1.3963" />
+    <limit lower="-3.14" upper="3.14" effort="99" velocity="1.3963" />
     <dynamics damping="0.01" friction="0.01" />
   </joint>
 

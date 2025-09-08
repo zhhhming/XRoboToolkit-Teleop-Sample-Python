@@ -92,12 +92,13 @@ class MujocoTeleopController(BaseTeleopController):
             print(f"Mocap ID for '{vis_target}' body: {self.target_mocap_idx[name]}")
 
     def _send_command(self):#依据placo更新的state q得到仿真机械臂的关节目标位置，再转为执行器的目标
+        
         qpos_desired = calc_mujoco_qpos_from_placo_q(
             self.mj_model,
             self.placo_robot,
             self.placo_robot.state.q,
             floating_base=self.floating_base,
-        )
+        )#从placo获取姿态复制给mujoco，是把placo里同名joint值复制给mujoco同名joint，所以mujoco joint可以多于placo
 
         for gripper_name, gripper_target in self.gripper_pos_target.items():
             for joint_name, joint_pos in gripper_target.items():
@@ -111,7 +112,8 @@ class MujocoTeleopController(BaseTeleopController):
                     raise ValueError(f"Joint '{gripper_name}' not found in MuJoCo model.")
 
         self.mj_data.ctrl = calc_mujoco_ctrl_from_qpos(self.mj_model, qpos_desired)#位置伺服的，应该就复制粘贴下就好
-
+        print(f"qpos_desired:{qpos_desired}")
+        print(f"real_qpos111:{self.mj_data.qpos}")
         if self.visualize_placo:
             self._update_placo_viz()
 #将mujoco机械臂状态复制给placo model
@@ -123,6 +125,7 @@ class MujocoTeleopController(BaseTeleopController):
             mj_qpos,
             floating_base=self.floating_base,
         )
+        
         self.placo_robot.update_kinematics()
 #更新用于显示目标位置的小坐标系的位置
     def _update_mocap_target(self):

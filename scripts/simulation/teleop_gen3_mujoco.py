@@ -22,7 +22,15 @@ def main(
             "pose_source": "right_controller",
             "control_trigger": "right_grip",
             "vis_target": "gen3_target",
+            "gripper_config": {
+            "type": "parallel",
+            "gripper_trigger": "right_trigger",
+            "joint_names": ["left_outer_knuckle"],
+            "open_pos": [0.0],
+            "close_pos": [0.8],
         },
+        },
+        
     }
 
     # Create and initialize the teleoperation controller
