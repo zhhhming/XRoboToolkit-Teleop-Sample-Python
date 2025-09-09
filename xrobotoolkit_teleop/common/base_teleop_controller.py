@@ -53,9 +53,9 @@ class BaseTeleopController(abc.ABC):
             self.data_logger = DataLogger(log_dir=log_dir)
 
         # Initial poses
-        self.ref_ee_xyz = {name: None for name in manipulator_config.keys()}
+        self.ref_ee_xyz = {name: None for name in manipulator_config.keys()}#末端执行器参考
         self.ref_ee_quat = {name: None for name in manipulator_config.keys()}
-        self.ref_controller_xyz = {name: None for name in manipulator_config.keys()}
+        self.ref_controller_xyz = {name: None for name in manipulator_config.keys()}#外接控制器
         self.ref_controller_quat = {name: None for name in manipulator_config.keys()}
         self.effector_task = {}
         self.effector_control_mode = {}  # Store control mode for each end effector
@@ -78,7 +78,7 @@ class BaseTeleopController(abc.ABC):
 
         self._robot_setup()
         self._placo_setup()
-
+#获取外接控制器姿态和与参考姿态的差值
     def _process_xr_pose(self, xr_pose, src_name):
         """Process the current XR controller pose."""
         # Get position and orientation
@@ -143,7 +143,7 @@ class BaseTeleopController(abc.ABC):
             control_mode = config.get("control_mode", "pose")
             self.effector_control_mode[name] = control_mode
             
-            ee_xyz, ee_quat = self._get_link_pose(config["link_name"])
+            ee_xyz, ee_quat = self._get_link_pose(config["link_name"])#当前控制参考关节的位置
             
             if control_mode == "position":
                 # Position-only control
@@ -153,7 +153,7 @@ class BaseTeleopController(abc.ABC):
                 # Full pose control (default)
                 ee_target = tf.quaternion_matrix(ee_quat)
                 ee_target[:3, 3] = ee_xyz
-                self.effector_task[name] = self.solver.add_frame_task(config["link_name"], ee_target)
+                self.effector_task[name] = self.solver.add_frame_task(config["link_name"], ee_target)#添加关节控制任务
                 print(f"Created pose task for {name} -> {config['link_name']}")
             
             self.effector_task[name].configure(name, "soft", 1.0)
@@ -182,7 +182,7 @@ class BaseTeleopController(abc.ABC):
         This is the core IK logic block. It reads from XR, updates Placo tasks,
         and solves the kinematics.
         """
-        self._update_robot_state()
+        self._update_robot_state()#复制粘贴对应机械臂的关节位置给state.q
         self.placo_robot.update_kinematics()
 
         for src_name, config in self.manipulator_config.items():
@@ -192,7 +192,7 @@ class BaseTeleopController(abc.ABC):
             if self.active[src_name]:
                 if self.ref_ee_xyz[src_name] is None:
                     print(f"{src_name} is activated.")
-                    self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])#获取当前的机械臂姿态
+                    self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])#激活机械臂，设置控制机械臂的关节初始参考位置
 
                 xr_pose = self.xr_client.get_pose_by_name(config["pose_source"])
                 delta_xyz, delta_rot = self._process_xr_pose(xr_pose, src_name)#获取控制器相对运动
@@ -212,7 +212,7 @@ class BaseTeleopController(abc.ABC):
                     target_pose = tf.quaternion_matrix(target_quat)
                     target_pose[:3, 3] = target_xyz
                     self.effector_task[src_name].T_world_frame = target_pose
-            else:#没按下trigger就取消追踪了，把控制器的参考位置也删掉，要不下次按下trigger，这个控制器相对运动一下就很大，每次按下trigger，都以当时为初始姿态
+            else:#没按下trigger就取消追踪了，把控制器的参考位置也删掉，到时重新初始化控制器参考位置。
                 if self.ref_ee_xyz[src_name] is not None:
                     print(f"{src_name} is deactivated.")
                     self.ref_ee_xyz[src_name] = None
@@ -222,13 +222,13 @@ class BaseTeleopController(abc.ABC):
         self._update_motion_tracker_tasks()
 
         try:
-            self.solver.solve(True)#是solve完后，placo state q就更新了吗
+            self.solver.solve(True)#solve后直接更新placo model姿态
         except RuntimeError as e:
             print(f"IK solver failed: {e}")
-
+#有个额外的控制追踪器可以用于控制一个额外的关节和追踪器位置相同
     def _update_motion_tracker_tasks(self):
         """Process motion tracker data and update corresponding Placo tasks."""
-        motion_tracker_data = self.xr_client.get_motion_tracker_data()
+        motion_tracker_data = self.xr_client.get_motion_tracker_data()#？
 
         for src_name, config in self.manipulator_config.items():
             # Skip if no motion tracker configured for this end effector
@@ -271,7 +271,7 @@ class BaseTeleopController(abc.ABC):
             # Update motion tracker task target position
             if src_name in self.motion_tracker_task:
                 self.motion_tracker_task[src_name].target_world = final_target_xyz
-
+#placo视图里的受控关节实际位置和目标位置展示
     def _init_placo_viz(self):
         self.placo_vis = robot_viz(self.placo_robot)
         webbrowser.open(self.placo_vis.viewer.url())
@@ -321,7 +321,7 @@ class BaseTeleopController(abc.ABC):
                 tracker_frame = np.eye(4)
                 tracker_frame[:3, 3] = self.motion_tracker_task[name].target_world
                 frame_viz(f"vis_tracker_{name}", tracker_frame)
-
+#把当前机械臂姿态同步为求解器目标
     def sync_end_effector_poses_to_placo_tasks(self):
         """
         Syncs the current end effector link poses to their corresponding placo tasks.
@@ -342,7 +342,7 @@ class BaseTeleopController(abc.ABC):
                 self.effector_task[name].T_world_frame = ee_target
             
             print(f"Synced {name} end effector pose to placo task: {config['link_name']}")
-
+#更新夹爪目标位置
     def _update_gripper_target(self):
         for gripper_name in self.manipulator_config.keys():
             if "gripper_config" not in self.manipulator_config[gripper_name]:

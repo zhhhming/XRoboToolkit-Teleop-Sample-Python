@@ -8,7 +8,10 @@ import meshcat.transformations as tf
 import numpy as np
 
 from xrobotoolkit_teleop.common.base_teleop_controller import BaseTeleopController
+from xrobotoolkit_teleop.hardware.gen3_robot import KortexRobotController
 from xrobotoolkit_teleop.hardware.interface.base_camera import BaseCameraInterface
+from xrobotoolkit_teleop.utils.geometry import apply_delta_pose
+from xrobotoolkit_teleop.utils.parallel_gripper_utils import calc_parallel_gripper_position
 
 
 class HardwareTeleopController(BaseTeleopController, ABC):
@@ -29,8 +32,6 @@ class HardwareTeleopController(BaseTeleopController, ABC):
         enable_log_data: bool,
         log_dir: str,
         log_freq: float,
-        enable_camera: bool,
-        camera_fps: int,
         **kwargs,
     ):
         super().__init__(
@@ -45,55 +46,121 @@ class HardwareTeleopController(BaseTeleopController, ABC):
             log_dir=log_dir,
             log_freq=log_freq,
         )
-
+        self.manipulator_config=manipulator_config
         self._start_time = 0
         self.control_rate_hz = control_rate_hz
         self.log_freq = log_freq
         self.visualize_placo = visualize_placo
-        self.enable_camera = enable_camera
-        self.camera_interface: BaseCameraInterface = None
-        self.camera_fps = camera_fps
-
+        self.robot_controller= None
         if self.visualize_placo:
             self._init_placo_viz()
-
+        self.gripper_config = None
         self._prev_b_button_state = False
         self._is_logging = False
+        self.gripper_pos={}
+        for name, config in self.manipulator_config.items():
+            if "gripper_config" in config:
+                self.gripper_config = config["gripper_config"]
+                self.gripper_pos[name]=None
 
-    @abstractmethod
-    def _robot_setup():
+
+    def _robot_setup(self):
         """Initializes hardware-specific interfaces (e.g., CAN, ROS)."""
-        pass
+        self.robot_controller=KortexRobotController()#初始化gen3机械臂
+        self.robot_controller.home_robot()#机械臂回零
+        self.robot_controller.home_gripper()#夹爪回零
 
-    @abstractmethod
-    def _initialize_camera():
-        """Initializes the specific camera interface."""
-        pass
 
-    @abstractmethod
-    def _update_robot_state():
+    def _update_robot_state(self):
         """Reads the current robot state from hardware and updates Placo."""
-        pass
+        robo_pos=self.robot_controller.get_joint_positions()
+        self.placo_robot.state.q=robo_pos#不知道顺序对不对
+        self.placo_robot.update_kinematics()
+    
+    def _update_ik(self):
+        self._update_robot_state()
+        self.placo_robot.update_kinematics()
+        for src_name, config in self.manipulator_config.items():
+            xr_grip_val = self.xr_client.get_key_value_by_name(config["control_trigger"])
+            self.active[src_name] = xr_grip_val > 0.9
+            
+            if self.active[src_name]:
+                if self.ref_ee_xyz[src_name] is None:
+                    print(f"{src_name} is activated.")
+                    self.ref_ee_xyz[src_name], self.ref_ee_quat[src_name] = self._get_link_pose(config["link_name"])#激活机械臂，设置控制机械臂的关节初始参考位置
 
-    @abstractmethod
-    def _send_command():
+                xr_pose = self.xr_client.get_pose_by_name(config["pose_source"])
+                delta_xyz, delta_rot = self._process_xr_pose(xr_pose, src_name)#获取控制器相对运动
+                
+                if self.effector_control_mode[src_name] == "position":
+                    # Position-only control: only apply position delta
+                    target_xyz = self.ref_ee_xyz[src_name] + delta_xyz#结合当前机械臂姿态更新目标
+                    self.effector_task[src_name].target_world = target_xyz#设定目标
+                else:
+                    # Full pose control: apply both position and orientation deltas
+                    target_xyz, target_quat = apply_delta_pose(
+                        self.ref_ee_xyz[src_name],
+                        self.ref_ee_quat[src_name],
+                        delta_xyz,
+                        delta_rot,
+                    )
+                    target_pose = tf.quaternion_matrix(target_quat)
+                    target_pose[:3, 3] = target_xyz
+                    self.effector_task[src_name].T_world_frame = target_pose
+            else:#没按下trigger就取消追踪了，把控制器的参考位置也删掉，到时重新初始化控制器参考位置。
+                if self.ref_ee_xyz[src_name] is not None:
+                    print(f"{src_name} is deactivated.")
+                    self.ref_ee_xyz[src_name] = None
+                    self.ref_controller_xyz[src_name] = None
+        try:
+            self.solver.solve(True)#solve后直接更新placo model姿态
+        except RuntimeError as e:
+            print(f"IK solver failed: {e}")
+
+    def _update_gripper_target(self):
+        for gripper_name in self.manipulator_config.keys():
+            if "gripper_config" not in self.manipulator_config[gripper_name]:
+                continue
+
+            gripper_config = self.manipulator_config[gripper_name]["gripper_config"]
+            gripper_type = gripper_config["type"]
+            if gripper_type == "parallel":
+                trigger_value = self.xr_client.get_key_value_by_name(gripper_config["gripper_trigger"])
+                    # Calculate the target position based on the trigger value
+                gripper_pos = calc_parallel_gripper_position(self.robot_controller.get_gripper_open_pos(), self.robot_controller.get_gripper_close_pos, trigger_value)
+                self.gripper_pos[gripper_name] = gripper_pos
+            else:
+                # TODO: add dexterous hand support
+                raise ValueError(f"Unsupported gripper type: {gripper_type}")
+            
+    def placo_q_to_kortex_deg(self, state_q, reorder=None):
+        qj = state_q[7:] if self.floating_base else state_q
+        qj_deg = np.rad2deg(qj)
+        if reorder is not None:
+            qj_deg = qj_deg[reorder]
+        return qj_deg
+    
+    def _send_command(self):
         """Sends motor commands to the hardware."""
-        pass
+        joint_pose_target =self.placo_q_to_kortex_deg(self.placo_robot.state.q)
+        self.robot_controller.set_joint_positions(joint_pose_target)
+        for name, gripper_target in self.gripper_pos:
+            self.robot_controller.set_gripper_position(gripper_target)
+        print(f"joint_pose_target:{joint_pose_target}")
+        print(f"gripper_target:{gripper_target}")
+        if self.visualize_placo:
+            self._update_placo_viz
+
+    
 
     @abstractmethod
     def _get_robot_state_for_logging() -> Dict:
         """Returns a dictionary of robot-specific data for logging."""
         pass
 
-    @abstractmethod
-    def _shutdown_robot():
-        """Performs graceful shutdown of the robot hardware."""
-        pass
-
-    @abstractmethod
-    def _get_camera_frame_for_logging(self) -> Dict:
-        """Returns a dictionary of camera frames for logging with camera names as keys."""
-        pass
+#关机
+    def _shutdown_robot(self):
+        self.robot_controller.close()
 
     def _get_link_pose(self, link_name: str):
         """Gets the current world pose for a given link name from Placo."""
@@ -118,18 +185,14 @@ class HardwareTeleopController(BaseTeleopController, ABC):
 
         self.data_logger.add_entry(data_entry)
 
-    def _pre_ik_update(self):
-        """Hook for subclasses to run logic before the main IK update."""
-        pass
-
+    
     def _ik_thread(self, stop_event: threading.Event):
         """Dedicated thread for running the IK solver."""
         while not stop_event.is_set():
             start_time = time.time()
-            self._update_robot_state()
+            self._update_robot_state()#复制粘贴对应机械臂的关节位置给state.q
             self._update_gripper_target()
-            self._pre_ik_update()
-            self._update_ik()
+            self._update_ik()#更新目标并求解，更新placo model位置
             if self.visualize_placo:
                 self._update_placo_viz()
             elapsed_time = time.time() - start_time
@@ -142,7 +205,7 @@ class HardwareTeleopController(BaseTeleopController, ABC):
         """Dedicated thread for sending commands to hardware."""
         while not stop_event.is_set():
             start_time = time.time()
-            self._send_command()
+            self._send_command()#发送控制命令给机械臂
             elapsed_time = time.time() - start_time
             sleep_time = (1.0 / self.control_rate_hz) - elapsed_time
             if sleep_time > 0:
@@ -162,7 +225,7 @@ class HardwareTeleopController(BaseTeleopController, ABC):
             if sleep_time > 0:
                 time.sleep(sleep_time)
         print("Data logging thread has stopped.")
-
+#用于控制是否开始记录数据
     def _check_logging_button(self):
         """Checks for the 'B' button press to toggle data logging."""
         b_button_state = self.xr_client.get_button_state_by_name("B")
@@ -184,91 +247,6 @@ class HardwareTeleopController(BaseTeleopController, ABC):
 
         self._prev_b_button_state = b_button_state
 
-    def _camera_thread(self, stop_event: threading.Event):
-        """Dedicated thread for managing the camera lifecycle and streaming."""
-        if not self.camera_interface:
-            return
-
-        print("Camera thread started.")
-        window_name = "Hardware Cameras"
-        window_created = False
-
-        try:
-            while not stop_event.is_set():
-                self.camera_interface.update_frames()
-                if self._is_logging:
-                    if not window_created:
-                        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-                        window_created = True
-
-                    frames_dict = self.camera_interface.get_frames()
-                    if not frames_dict:
-                        time.sleep(1.0 / self.camera_fps)
-                        continue
-
-                    all_camera_rows = []
-                    sorted_camera_names = sorted(frames_dict.keys())
-
-                    for name in sorted_camera_names:
-                        frames = frames_dict[name]
-                        images_in_row = []
-
-                        color_image = frames.get("color")
-                        if color_image is not None:
-                            if len(color_image.shape) == 2:
-                                color_image = cv2.cvtColor(color_image, cv2.COLOR_GRAY2BGR)
-                            images_in_row.append(color_image)
-
-                        depth_image = frames.get("depth")
-                        if depth_image is not None:
-                            depth_colormap = cv2.applyColorMap(
-                                cv2.convertScaleAbs(depth_image, alpha=0.03),
-                                cv2.COLORMAP_JET,
-                            )
-                            images_in_row.append(depth_colormap)
-
-                        if images_in_row:
-                            all_camera_rows.append(np.hstack(images_in_row))
-
-                    if all_camera_rows:
-                        max_width = max(row.shape[1] for row in all_camera_rows)
-                        padded_rows = [
-                            (
-                                np.hstack(
-                                    [
-                                        row,
-                                        np.zeros(
-                                            (row.shape[0], max_width - row.shape[1], 3),
-                                            dtype=np.uint8,
-                                        ),
-                                    ]
-                                )
-                                if row.shape[1] < max_width
-                                else row
-                            )
-                            for row in all_camera_rows
-                        ]
-                        if padded_rows:
-                            combined_image = np.vstack(padded_rows)
-                            cv2.imshow(
-                                window_name,
-                                cv2.cvtColor(combined_image, cv2.COLOR_RGB2BGR),
-                            )
-
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-                else:
-                    if window_created:
-                        cv2.destroyWindow(window_name)
-                        window_created = False
-                    time.sleep(1.0 / self.camera_fps)
-        finally:
-            if self.camera_interface:
-                self.camera_interface.stop()
-            if window_created:
-                cv2.destroyAllWindows()
-            print("Camera thread has stopped.")
-
     def _should_keep_running(self) -> bool:
         """Returns True if the main loop should continue running."""
         return not self._stop_event.is_set()
@@ -276,7 +254,6 @@ class HardwareTeleopController(BaseTeleopController, ABC):
     def run(self):
         """Main entry point that starts all threads."""
         self._robot_setup()
-        self._initialize_camera()
 
         self._start_time = time.time()
         self._stop_event = threading.Event()
@@ -297,13 +274,6 @@ class HardwareTeleopController(BaseTeleopController, ABC):
                 args=(self._stop_event,),
             )
             threads.append(log_thread)
-        if self.enable_camera and self.camera_interface:
-            camera_thread = threading.Thread(
-                name="_camera_thread",
-                target=self._camera_thread,
-                args=(self._stop_event,),
-            )
-            threads.append(camera_thread)
 
         for t in threads:
             t.daemon = True

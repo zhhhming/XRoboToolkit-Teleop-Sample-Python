@@ -58,7 +58,7 @@ class URController:
         print("Reached initial position.")
         self.gripper.activate()
         print("Gripper activated.")
-
+#控制关节位置
     def servo_joints(self, joint_positions: np.ndarray):
         t_start = self.rtde_c.initPeriod()
         self.rtde_c.servoJ(
