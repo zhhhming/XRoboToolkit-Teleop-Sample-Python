@@ -41,7 +41,7 @@ def main(
         scale_factor=scale_factor,
         visualize_placo=visualize_placo,
     )
-    #不知道干啥
+    #不知道干啥，就是一些关节约束，加到控制任务里的
     # additional constraints hardcoded here for now
     joints_task = controller.solver.add_joints_task()
     joints_task.set_joints({joint: 0.0 for joint in controller.placo_robot.joint_names()})

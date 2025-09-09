@@ -285,7 +285,7 @@ class DualArmURController:
             print(f"IK solver failed: {e}. Returning last known good joint positions.")
         except Exception as e:
             print(f"An unexpected error occurred in IK: {e}. Returning last known good joint positions.")
-
+    
     def reset(self):
         self.left_controller.reset()
         self.right_controller.reset()
