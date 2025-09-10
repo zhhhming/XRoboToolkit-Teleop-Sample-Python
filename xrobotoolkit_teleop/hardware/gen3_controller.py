@@ -92,7 +92,6 @@ class HardwareTeleopController:
         robot_urdf_path: str,
         manipulator_config: dict,
         R_headset_world: np.ndarray,
-        floating_base: bool,
         scale_factor: float,
         visualize_placo: bool,
         control_rate_hz: int,
@@ -106,7 +105,6 @@ class HardwareTeleopController:
         # Basic configuration
         self.robot_urdf_path = robot_urdf_path
         self.manipulator_config = manipulator_config
-        self.floating_base = floating_base
         self.R_headset_world = R_headset_world
         self.scale_factor = scale_factor
         self.q_init = q_init
@@ -188,16 +186,10 @@ class HardwareTeleopController:
 
         # Set initial configuration
         if self.q_init is not None:
-            if self.floating_base:
-                self.placo_robot.state.q = self.q_init.copy()
-            else:
-                self.solver.mask_fbase(True)
-                self.placo_robot.state.q[7:] = self.q_init.copy()
+            self.placo_robot.state.q=self.q_init.copy()
         else:
-            if not self.floating_base:
-                self.solver.mask_fbase(True)
-                self.placo_robot.state.q[:7] = np.array([0, 0, 0, 0, 0, 0, 1])  # Identity quaternion for base
-          #应该可能没有前7位吧
+            pass
+
         self.placo_robot.update_kinematics()
 
         # Set up end effector tasks
@@ -281,14 +273,7 @@ class HardwareTeleopController:
             else:
                 placo_positions = robot_positions_rad
             
-            # Update Placo robot state
-            if self.floating_base:
-                # Keep base pose unchanged, update joint positions
-                self.placo_robot.state.q[7:] = placo_positions
-            else:
-                # For fixed base, update all joint positions
-                self.placo_robot.state.q = placo_positions
-            
+            self.placo_robot.state.q = placo_positions            
             self.placo_robot.update_kinematics()
             
         except Exception as e:
@@ -406,11 +391,7 @@ class HardwareTeleopController:
 
     def placo_q_to_robot_deg(self, state_q):
         """Convert Placo joint positions to robot degrees"""
-        # Extract joint positions (skip base if floating base)
-        qj = state_q[7:] if self.floating_base else state_q
-        
-        # Convert to degrees
-        qj_deg = np.rad2deg(qj)
+        qj_deg = np.rad2deg(state_q)
         
         # Handle joint reordering if needed (reverse mapping)
         if self.joint_reorder_map is not None:
@@ -691,7 +672,6 @@ if __name__ == "__main__":
             robot_urdf_path="D:\xrobotics\XRoboToolkit-Teleop-Sample-Python\assets\arx\Gen\GEN3-6DOF.urdf",
             manipulator_config=manipulator_config,
             R_headset_world=R_headset_world,
-            floating_base=False,
             scale_factor=1.0,
             visualize_placo=True,
             control_rate_hz=100,
