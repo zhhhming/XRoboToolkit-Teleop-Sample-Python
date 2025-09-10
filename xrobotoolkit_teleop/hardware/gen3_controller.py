@@ -99,7 +99,7 @@ class HardwareTeleopController:
         log_dir: str,
         log_freq: float,
         q_init: np.ndarray = None,
-        joint_reorder_map: np.ndarray = None,  # For handling joint order differences
+        joint_name_to_robot_index: Dict[str,int] = None,  # For handling joint order differences
         **kwargs,
     ):
         # Basic configuration
@@ -109,7 +109,16 @@ class HardwareTeleopController:
         self.scale_factor = scale_factor
         self.q_init = q_init
         self.dt = 1.0 / control_rate_hz
-        self.joint_reorder_map = joint_reorder_map  # Map from placo joints to robot joints
+        if joint_name_to_robot_index == None:
+            self.joint_name_to_robot_index = {
+                "joint_1": 0, 
+                "joint_2": 1, 
+                "joint_3": 2,
+                "joint_4": 3, 
+                "joint_5": 4, 
+                "joint_6": 5, 
+                "joint_7": 6,
+            }  # Map from placo joints to robot joints
         
         # Control parameters
         self.control_rate_hz = control_rate_hz
@@ -256,6 +265,59 @@ class HardwareTeleopController:
                 frame_viz(f"vis_target_{name}", target_frame)
             else:
                 frame_viz(f"vis_target_{name}", self.effector_task[name].T_world_frame)
+    def _idxq_nq(self, joint_name: str):
+        """返回该关节在 q 中的起始 idx 和维度 nq"""
+        jid = self.placo_robot.model.getJointId(joint_name)
+        j = self.placo_robot.model.joints[jid]
+        return j.idx_q, j.nq
+
+    def _read_joint_rad(self, joint_name: str) -> float | None:
+        """从 state.q 精确读取某个转动关节弧度值"""
+        i0, nq = self._idxq_nq(joint_name)
+        return float(self.placo_robot.state.q[i0])
+
+    def _write_joint_rad(self, joint_name: str, value_rad: float) -> bool:
+        """把标量弧度写回 state.q 的正确槽位；非标量关节直接跳过"""
+        i0, nq = self._idxq_nq(joint_name)
+        q = self.placo_robot.state.q.copy()
+        q[i0] = float(value_rad)
+        self.placo_robot.state.q = q
+        return True
+
+    def _placo_to_robot_deg_vector(self) -> np.ndarray:
+        """
+        从 Placo 精确读取 7 个关节转robot 索引放入数组。
+        """
+        # 计算目标长度
+        if not self.joint_name_to_robot_index:
+            raise RuntimeError("joint_name_to_robot_index is empty")
+        n = max(self.joint_name_to_robot_index.values()) + 1
+
+        robot_deg = np.full(n, np.nan, dtype=float)  # 先用 NaN 填充，便于发现缺失
+
+        for name, idx in self.joint_name_to_robot_index.items():
+            v_rad = self._read_joint_rad(name) 
+            if v_rad is None:
+                print(f"[WARN] skip {name}: not a scalar joint or not found.")
+                continue
+            robot_deg[idx] = np.degrees(v_rad)
+
+        # 可选：强制要求都读到（7个都不是 NaN），否则抛错/返回
+        if np.isnan(robot_deg).any():
+            # 这里选择仅打印警告并继续运行；你也可以 raise
+            missing = np.where(np.isnan(robot_deg))[0].tolist()
+            print(f"[WARN] _placo_to_robot_deg_vector: missing indices {missing}.")
+        return robot_deg
+
+
+    def _robot_deg_to_placo(self, robot_deg: np.ndarray):
+        """
+        把机器人测得的 7 个关节角写回 Placo 的 state.q（rad）。
+        """
+        if robot_deg is None or len(robot_deg) < 7:
+            raise ValueError("robot_deg must have 7 elements.")
+        for name, idx in self.joint_name_to_robot_index.items():
+            self._write_joint_rad(name, np.radians(float(robot_deg[idx])))
 
     def _update_robot_state(self):
         """Read current robot state and update Placo model"""
@@ -267,17 +329,7 @@ class HardwareTeleopController:
                 print("Warning: Failed to get robot joint positions")
                 return
             
-            # Convert degrees to radians
-            robot_positions_rad = np.deg2rad(robot_positions)
-            
-            # Handle joint reordering if needed
-            if self.joint_reorder_map is not None:
-                # Reorder joints according to mapping
-                placo_positions = robot_positions_rad[self.joint_reorder_map]
-            else:
-                placo_positions = robot_positions_rad
-            
-            self.placo_robot.state.q = placo_positions            
+            self._robot_deg_to_placo(robot_positions)         
             self.placo_robot.update_kinematics()
             
         except Exception as e:
@@ -393,24 +445,15 @@ class HardwareTeleopController:
             else:
                 raise ValueError(f"Unsupported gripper type: {gripper_type}")
 
-    def placo_q_to_robot_deg(self, state_q):
-        """Convert Placo joint positions to robot degrees"""
-        qj_deg = np.rad2deg(state_q)
-        
-        # Handle joint reordering if needed (reverse mapping)
-        if self.joint_reorder_map is not None:
-            # Create reverse mapping
-            robot_positions = np.zeros_like(qj_deg)
-            robot_positions[self.joint_reorder_map] = qj_deg
-            return robot_positions
-        
-        return qj_deg
+    def placo_q_to_robot_deg(self):
+        """Convert Placo joint positions to robot degrees"""     
+        return self._placo_to_robot_deg_vector()
 
     def _send_command(self):
         """Send computed commands to robot hardware"""
         try:
             # Get target joint positions from Placo
-            joint_pose_target = self.placo_q_to_robot_deg(self.placo_robot.state.q)
+            joint_pose_target = self.placo_q_to_robot_deg()
             
             # Send joint positions to robot
             self.robot_controller.set_joint_positions(joint_pose_target)
@@ -471,7 +514,7 @@ class HardwareTeleopController:
             gripper_position = self.robot_controller.get_gripper_position()
             
             # Get Placo state
-            placo_joint_positions = self.placo_q_to_robot_deg(self.placo_robot.state.q)
+            placo_joint_positions = self.placo_q_to_robot_deg()
             
             # Prepare data entry
             data_entry = {
@@ -670,7 +713,7 @@ if __name__ == "__main__":
     
     try:
         controller = HardwareTeleopController(
-            robot_urdf_path="D:\xrobotics\XRoboToolkit-Teleop-Sample-Python\assets\arx\Gen\GEN3-6DOF.urdf",
+            robot_urdf_path="/home/ming/xrrobotics_new/XRoboToolkit-Teleop-Sample-Python/assets/arx/Gen/GEN3-7DOF.urdf",
             manipulator_config=manipulator_config,
             R_headset_world=R_headset_world,
             scale_factor=1.0,

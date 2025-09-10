@@ -19,7 +19,7 @@ from kortex_api.autogen.messages import Session_pb2, Base_pb2, BaseCyclic_pb2
 from kortex_api.Exceptions.KServerException import KServerException
 
 # 连接参数
-ROBOT_IP = "169.254.105.199"
+ROBOT_IP = "192.168.1.10"
 ROBOT_TCP_PORT = 10000
 ROBOT_UDP_PORT = 10001
 USERNAME = "admin"
