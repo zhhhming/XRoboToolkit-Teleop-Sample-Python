@@ -187,8 +187,12 @@ class HardwareTeleopController:
         # Set initial configuration
         if self.q_init is not None:
             self.placo_robot.state.q=self.q_init.copy()
-        else:
-            pass
+       
+        try:
+            self._update_robot_state()
+        except Exception as e:
+            print(f"[WARN] Initial robot->Placo sync failed, keep q_init/default: {e}")
+
 
         self.placo_robot.update_kinematics()
 
@@ -660,11 +664,8 @@ if __name__ == "__main__":
         }
     }
     
-    # Headset to world transformation (identity for this example)
     R_headset_world = R_HEADSET_TO_WORLD
     
-    # Joint reordering map (if needed)
-    # Example: if placo joint order [0,1,2,3,4,5,6] maps to robot order [6,5,4,3,2,1,0]
     joint_reorder_map = None  # np.array([6,5,4,3,2,1,0])
     
     try:
