@@ -1,5 +1,5 @@
 from xrobotoolkit_teleop.hardware.gen3_controller import KortexRobotController
 robot=KortexRobotController()
-robot.home_gripper()
-print(f"robot_open_pos:{robot.get_gripper_open_pos()}")
-print(f"robot_close_pos:{robot.get_gripper_close_pos()}")
+while True:
+    print(f"robot_joint_positions:{robot.get_joint_positions()}")
+    print(f"robot_gripper_position:{robot.get_gripper_position()}")

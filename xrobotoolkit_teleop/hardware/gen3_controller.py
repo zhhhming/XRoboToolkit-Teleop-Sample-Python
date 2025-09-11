@@ -175,9 +175,6 @@ class HardwareTeleopController:
         if not self.robot_controller.home_robot():
             raise RuntimeError("Failed to home robot")
         
-        # Home the gripper
-        print("Homing gripper...")
-        self.robot_controller.home_gripper()
         
         print("Robot setup completed successfully")
 
@@ -192,6 +189,8 @@ class HardwareTeleopController:
 
         self.solver = placo.KinematicsSolver(self.placo_robot)
         self.solver.dt = self.dt
+        self.solver.mask_fbase(True)
+        self.solver.add_kinetic_energy_regularization_task(1e-6)
 
         # Set initial configuration
         if self.q_init is not None:
@@ -307,6 +306,7 @@ class HardwareTeleopController:
             # 这里选择仅打印警告并继续运行；你也可以 raise
             missing = np.where(np.isnan(robot_deg))[0].tolist()
             print(f"[WARN] _placo_to_robot_deg_vector: missing indices {missing}.")
+            raise RuntimeError(f"Failed to read joint values for indices: {missing}")
         return robot_deg
 
 
@@ -318,6 +318,7 @@ class HardwareTeleopController:
             raise ValueError("robot_deg must have 7 elements.")
         for name, idx in self.joint_name_to_robot_index.items():
             self._write_joint_rad(name, np.radians(float(robot_deg[idx])))
+            print(np.radians(float(robot_deg[idx])))
 
     def _update_robot_state(self):
         """Read current robot state and update Placo model"""
@@ -329,6 +330,10 @@ class HardwareTeleopController:
                 print("Warning: Failed to get robot joint positions")
                 return
             
+            if len(robot_positions) < 7:
+                print(f"Warning: Expected 7 joint positions, got {len(robot_positions)}")
+                return
+                
             self._robot_deg_to_placo(robot_positions)         
             self.placo_robot.update_kinematics()
             
@@ -709,7 +714,7 @@ if __name__ == "__main__":
     
     R_headset_world = R_HEADSET_TO_WORLD
     
-    joint_reorder_map = None  # np.array([6,5,4,3,2,1,0])
+
     
     try:
         controller = HardwareTeleopController(
@@ -722,7 +727,6 @@ if __name__ == "__main__":
             enable_log_data=True,
             log_dir="teleop_logs",
             log_freq=50.0,
-            joint_reorder_map=joint_reorder_map,
         )
         
         controller.run()

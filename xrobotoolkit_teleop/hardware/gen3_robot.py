@@ -88,8 +88,9 @@ class KortexRobotController:
         
         # Set servoing mode to single level
         self._set_single_level_servoing()
-        self.gripper_open_pos=None
-        self.gripper_close_pos=None
+        self.gripper_open_pos=0.01
+        self.gripper_close_pos=0.99
+        self.in_low_level_mode = False
         print("Kortex Robot Controller initialization complete!")
     
     def _create_session(self):
@@ -116,7 +117,208 @@ class KortexRobotController:
         base_servo_mode.servoing_mode = Base_pb2.SINGLE_LEVEL_SERVOING
         self.base_client.SetServoingMode(base_servo_mode)
         print("Servoing mode set to SINGLE_LEVEL_SERVOING")
+
+    def enter_low_level_mode(self):
+        """进入低级控制模式"""
+        print("Entering low-level servoing mode...")
+        
+        # 保存当前伺服模式
+        self.previous_servoing_mode = self.base_client.GetServoingMode()
+
+        try:
+            self.base_client.Stop()
+            time.sleep(0.05)
+        except Exception:
+            pass
+        
+        # 设置为低级伺服模式
+        base_servo_mode = Base_pb2.ServoingModeInformation()
+        base_servo_mode.servoing_mode = Base_pb2.LOW_LEVEL_SERVOING
+        self.base_client.SetServoingMode(base_servo_mode)
+
+        # 3) 等待确认（最多 3s）
+        ok = False
+        for _ in range(300):
+            mode = self.base_client.GetServoingMode().servoing_mode
+            if mode == Base_pb2.LOW_LEVEL_SERVOING:
+                ok = True
+                break
+            time.sleep(0.01)
+        if not ok:
+            raise RuntimeError("Failed to enter LOW_LEVEL_SERVOING (timeout)")
+
+        
+        # 获取初始反馈
+        self.base_feedback = self.base_cyclic_client.RefreshFeedback()
+        
+        # 初始化命令为当前状态
+        self.base_command = BaseCyclic_pb2.Command()
+        self.base_command.frame_id = 0
+        self.base_command.interconnect.command_id.identifier = 0
+        self.base_command.interconnect.gripper_command.command_id.identifier = 0
+        
+        # 初始化关节命令为当前位置
+        for i in range(self.actuator_count.count):
+            actuator_command = self.base_command.actuators.add()
+            actuator_command.position = self.base_feedback.actuators[i].position
+            actuator_command.velocity = 0.0
+            actuator_command.torque_joint = 0.0
+            actuator_command.current_motor = 0.0
+        
+        # 初始化gripper命令为当前状态
+        if self.base_feedback.HasField('interconnect')and len(self.base_feedback.interconnect.gripper_feedback.motor) > 0:
+            grip_cmd = self.base_command.interconnect.gripper_command
+            grip_cmd.Clear()
+            m = grip_cmd.motor_cmd.add()
+            m.position = self.base_feedback.interconnect.gripper_feedback.motor[0].position
+            m.velocity = 0.0
+            m.force = 0.0
+        
+        # 发送第一个命令以建立连续性
+        self.base_command.frame_id = 0
+        self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+        self._frame_id = 0
+
+        self.in_low_level_mode = True
+        print("Low-level servoing mode activated")
+
+    def exit_low_level_mode(self):
+        """退出低级控制模式"""
+        print("Exiting low-level servoing mode...")
+        
+        if hasattr(self, 'previous_servoing_mode'):
+            self.base_client.SetServoingMode(self.previous_servoing_mode)
+            print("Servoing mode restored")
+        else:
+            # 恢复到单级伺服模式
+            self._set_single_level_servoing()
+        
+        self.in_low_level_mode = False
+        print("Low-level servoing mode deactivated")
     
+    def set_joint_positions_udp(
+        self,
+        positions,
+        *,
+        kp: float = 2.0,          # 比例增益：deg/s per deg
+        vel_cap: float = 0.2,    # 每关节速度上限 deg/s
+        tol: float = 0.5          # 判定到位阈值 deg:
+    ):
+        """
+        使用UDP BaseCyclic设置关节位置 (低级控制模式)
+        
+        Args:
+            positions: numpy array of joint positions (in degrees)
+        """
+        if not hasattr(self, 'in_low_level_mode') or not self.in_low_level_mode:
+            print("Warning: Not in low-level mode. Entering low-level mode...")
+            self.enter_low_level_mode()
+
+        if self.base_client.GetServoingMode().servoing_mode != Base_pb2.LOW_LEVEL_SERVOING:
+            print("[WARN] Not in LOW_LEVEL anymore, trying to re-enter...")
+            self.enter_low_level_mode()
+
+        if len(positions) != self.actuator_count.count:
+            print(f"ERROR: Expected {self.actuator_count.count} positions, got {len(positions)}")
+            return False
+        
+        try:
+            fb = self.base_cyclic_client.RefreshFeedback()
+            cur = np.array([a.position for a in fb.actuators], dtype=float)
+            print(f"curent_pos:{cur}")
+             # 2) 误差 & 到位检查
+            tgt = np.asarray(positions, dtype=float).ravel()
+            print(f"targrt_pos:{tgt}")
+            err = tgt - cur
+            max_err = float(np.max(np.abs(err))) if err.size else 0.0
+            reached = (max_err <= tol)
+            # 更新关节位置命令
+            for i in range(self.actuator_count.count):
+                self.base_command.actuators[i].position = float(tgt[i])
+                spd = min(vel_cap, max(0.0, kp * abs(err[i])))
+                print(f"actuator{i}:speed{spd}      position:{float(tgt[i])}")
+                self.base_command.actuators[i].velocity = float(spd)
+            self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+            self.base_command.frame_id = self._frame_id
+            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+
+            return {"ok": True, "reached": reached, "max_err": max_err}
+        except KServerException as e:
+            # 打印当前模式，帮助定位
+            cur = self.base_client.GetServoingMode().servoing_mode
+            print(f"ERROR via UDP: {e} | current servo mode={Base_pb2.ServoingMode.Name(cur)}")
+            return {"ok": False, "reached": False, "max_err": None}
+        except Exception as e:
+            print(f"ERROR setting joint positions via UDP: {e}")
+            return {"ok": False, "reached": False, "max_err": None}
+
+
+    def set_gripper_position_udp(
+        self,
+        position,
+        *,
+        kp: float = 2.0,            # 比例增益：%/s per %
+        vel_cap_pct: float = 20.0, # 速度上限（百分比）
+        tol_pct: float = 1.5,       # 到位阈值（百分比）
+        force_pct: float | None = None
+    ):
+        """
+        使用UDP BaseCyclic设置gripper位置 (低级控制模式)
+        
+        Args:
+            position: gripper position (0.0 to 1.0 or actual position value)
+        """
+        if not hasattr(self, 'in_low_level_mode') or not self.in_low_level_mode:
+            print("Warning: Not in low-level mode. Entering low-level mode...")
+            self.enter_low_level_mode()
+        grip_cmd = self.base_command.interconnect.gripper_command
+        if len(grip_cmd.motor_cmd) == 0:
+            m = grip_cmd.motor_cmd.add()
+        else:
+            m = grip_cmd.motor_cmd[0]
+
+        def to_percent(x):
+            x = float(x)
+            open_pos = getattr(self, 'gripper_open_pos', None)
+            close_pos = getattr(self, 'gripper_close_pos', None)
+            if open_pos is not None and close_pos is not None and abs(open_pos - close_pos) > 1e-6:
+                lo, hi = (open_pos, close_pos) if open_pos < close_pos else (close_pos, open_pos)
+                alpha = (x - lo) / (hi - lo)
+                return max(0.0, min(100.0, alpha * 100.0))
+            if 0.0 <= x <= 1.2:
+                return max(0.0, min(100.0, x * 100.0))
+            return max(0.0, min(100.0, x))
+        
+        def fb_to_percent(v):
+            v = float(v)
+            return v * 100.0 if 0.0 <= v <= 1.2 else v
+        try:
+            tgt_pct = to_percent(position)
+            fb = self.base_cyclic_client.RefreshFeedback()
+            cur_raw = fb.interconnect.gripper_feedback.motor[0].position if len(fb.interconnect.gripper_feedback.motor) > 0 else 0.0
+            cur_pct = fb_to_percent(cur_raw)#反馈的夹爪位置0到1,转成百分比
+            err = tgt_pct - cur_pct
+            reached = (abs(err) <= tol_pct)
+            m.position = float(tgt_pct)
+            if hasattr(m, 'velocity'):
+                v = min(vel_cap_pct, max(0.0, kp * abs(err)))
+                m.velocity = float(v if not reached else 0.0)
+            if hasattr(m, 'force'):
+                f = force_pct if force_pct is not None else getattr(self, 'gripper_force', 100.0)
+                m.force = float(max(0.0, min(100.0, f)))
+
+            # 4) 帧号递增 + 刷新一帧
+            self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+            self.base_command.frame_id = self._frame_id
+            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+
+            return {"ok": True, "reached": reached, "err_pct": float(err)}
+
+            
+        except Exception as e:
+            print(f"ERROR setting gripper position via UDP: {e}")
+            return {"ok": False, "reached": False, "err_pct": None}
+
     def _check_for_end_or_abort(self, event):
         """Callback function to check for action completion"""
         def check(notification, e=event):
@@ -169,6 +371,7 @@ class KortexRobotController:
             print("ERROR: Robot homing timed out!")
             return False
     
+
     def home_gripper(self):
         """Home the gripper and determine max/min positions"""
         
@@ -428,6 +631,9 @@ class KortexRobotController:
     def close(self):
         """Close the robot connection"""
         print("Closing robot connection...")
+
+        if hasattr(self, 'in_low_level_mode') and self.in_low_level_mode:
+            self.exit_low_level_mode()
         
         try:
             if hasattr(self, 'tcp_session_manager'):
