@@ -20,6 +20,7 @@ from placo_utils.visualization import (
 from google.protobuf import json_format
 
 from xrobotoolkit_teleop.hardware.gen3_robot import KortexRobotController
+from xrobotoolkit_teleop.hardware.ruckigtrajectory   import RuckigTrajectoryPlanner, RuckigControlInterface 
 from xrobotoolkit_teleop.common.xr_client import XrClient
 from xrobotoolkit_teleop.utils.geometry import (
     R_HEADSET_TO_WORLD,
@@ -36,6 +37,7 @@ class DataLogger:
         self.log_dir = log_dir
         self.data_entries = []
         self.session_start_time = None
+        
         
         # Create log directory if it doesn't exist
         os.makedirs(log_dir, exist_ok=True)
@@ -141,6 +143,8 @@ class HardwareTeleopController:
         
         # Robot controller
         self.robot_controller = None
+        self.ruckig_planner = None
+        self.ruckig_controller= None
         
         # Control state variables
         self.ref_ee_xyz = {name: None for name in manipulator_config.keys()}
@@ -155,6 +159,24 @@ class HardwareTeleopController:
         self.solver = None
         self.effector_task = {}
         self.effector_control_mode = {}
+        # 线程间共享：最新IK目标（deg）
+        self._target_position_lock = threading.Lock()
+        self._latest_ik_target = None
+
+        # 机器人状态缓存（deg），由 IK 线程刷新，控制线程只读
+        self._robot_state_lock = threading.Lock()
+        self._robot_pos_deg_cache = np.zeros(7)
+
+        # Ruckig 线程频率与计时 deque（ms）
+        from collections import deque
+        self.waypoint_rate_hz = 100.0      # 你可按需改
+        self.control_rate_hz_ll = 1000.0   # 低层控制 1 kHz
+        self._waypoint_dt = 1.0 / self.waypoint_rate_hz
+        self._control_dt_ll = 1.0 / self.control_rate_hz_ll
+        self.control_loop_times = deque(maxlen=100)
+        self.waypoint_loop_times = deque(maxlen=100)
+        self._robot_state_lock = threading.Lock()
+        self._robot_pos_deg_cache = np.zeros(7, dtype=float)  # control 写、IK 读
         
         # Initialize gripper positions
         for name, config in self.manipulator_config.items():
@@ -169,6 +191,8 @@ class HardwareTeleopController:
         
         # Initialize robot controller
         self.robot_controller = KortexRobotController()
+        self.ruckig_planner = RuckigTrajectoryPlanner()
+        self.ruckig_controller = RuckigControlInterface(self.robot_controller, self.ruckig_planner)
         
         # Home the robot
         print("Homing robot...")
@@ -321,24 +345,16 @@ class HardwareTeleopController:
             print(np.radians(float(robot_deg[idx])))
 
     def _update_robot_state(self):
-        """Read current robot state and update Placo model"""
+        """用缓存的关节角同步到 Placo（IK 线程用）"""
         try:
-            # Get current joint positions from robot
-            robot_positions = self.robot_controller.get_joint_positions()
-            
-            if len(robot_positions) == 0:
-                print("Warning: Failed to get robot joint positions")
+            with self._robot_state_lock:
+                robot_positions = self._robot_pos_deg_cache.copy()  # deg
+            if robot_positions.size < 7:
                 return
-            
-            if len(robot_positions) < 7:
-                print(f"Warning: Expected 7 joint positions, got {len(robot_positions)}")
-                return
-                
-            self._robot_deg_to_placo(robot_positions)         
+            self._robot_deg_to_placo(robot_positions)
             self.placo_robot.update_kinematics()
-            
         except Exception as e:
-            print(f"Error updating robot state: {e}")
+            print(f"Error updating robot state from cache: {e}")
 
     def _process_xr_pose(self, xr_pose, src_name):
         """Process XR controller pose and compute deltas"""
@@ -380,6 +396,10 @@ class HardwareTeleopController:
         pos = T_world_link[:3, 3]
         quat = tf.quaternion_from_matrix(T_world_link)
         return pos, quat
+    
+    def _set_ik_target_deg(self, q_deg: np.ndarray):
+        with self._target_position_lock:
+            self._latest_ik_target = q_deg.copy()
 
     def _update_ik(self):
         """Update inverse kinematics based on XR input"""
@@ -421,7 +441,8 @@ class HardwareTeleopController:
 
         # Solve IK
         try:
-            self.solver.solve(True)
+            self.solver.solve(True)            
+            self._set_ik_target_deg(self.placo_q_to_robot_deg())
         except RuntimeError as e:
             print(f"IK solver failed: {e}")
 
@@ -438,8 +459,8 @@ class HardwareTeleopController:
                 trigger_value = self.xr_client.get_key_value_by_name(gripper_config["gripper_trigger"])
                 
                 # Calculate gripper position based on trigger value
-                open_pos = self.robot_controller.get_gripper_open_pos()
-                close_pos = self.robot_controller.get_gripper_close_pos()
+                open_pos = 0.01
+                close_pos = 0.99
                 
                 if open_pos is not None and close_pos is not None:
                     gripper_pos = calc_parallel_gripper_position(open_pos, close_pos, trigger_value)
@@ -454,27 +475,6 @@ class HardwareTeleopController:
         """Convert Placo joint positions to robot degrees"""     
         return self._placo_to_robot_deg_vector()
 
-    def _send_command(self):
-        """Send computed commands to robot hardware"""
-        try:
-            # Get target joint positions from Placo
-            joint_pose_target = self.placo_q_to_robot_deg()
-            
-            # Send joint positions to robot
-            self.robot_controller.set_joint_positions(joint_pose_target)
-            
-            # Send gripper commands
-            for name, gripper_target in self.gripper_pos.items():
-                if gripper_target is not None:
-                    self.robot_controller.set_gripper_position(gripper_target)
-            
-            # Debug output
-            if len(self.gripper_pos) > 0:
-                gripper_targets = [f"{name}: {pos:.3f}" for name, pos in self.gripper_pos.items() if pos is not None]
-                print(f"Joint targets: {joint_pose_target}, Gripper: {gripper_targets}")
-            
-        except Exception as e:
-            print(f"Error sending command: {e}")
 
     def _check_logging_button(self):
         """Check for B button press to toggle data logging"""
@@ -547,6 +547,44 @@ class HardwareTeleopController:
         except Exception as e:
             print(f"Error logging data: {e}")
 
+    def _waypoint_thread(self, stop_event: threading.Event):
+        """以 waypoint_rate_hz 从 _latest_ik_target 抽样写入 Ruckig waypoints"""
+        print(f"Starting Waypoint thread at {self.waypoint_rate_hz}Hz...")
+        last_target = None
+        status_print_interval = 2.0
+        last_status_time = time.time()
+
+        while not stop_event.is_set():
+            loop_start = time.time()
+            try:
+                with self._target_position_lock:
+                    new_target = None if self._latest_ik_target is None else self._latest_ik_target.copy()
+                    # 读后不清空，允许丢多次（由去重/阈值控制）
+                if new_target is not None:
+                    if last_target is None or np.linalg.norm(new_target - last_target) > 0.05:
+                        self.ruckig_planner.add_waypoint(new_target)
+                        last_target = new_target
+
+                # 周期状态打印（可选）
+                now = time.time()
+                if now - last_status_time > status_print_interval:
+                    status = self.ruckig_planner.get_status()
+                    avg_wp = (np.mean(self.waypoint_loop_times) * 1000) if self.waypoint_loop_times else 0.0
+                    print(f"[WP] queued={status['num_waypoints']} processed={status['waypoints_processed']} "
+                        f"sim={status['simulation_mode']} loop={avg_wp:.1f}ms")
+                    last_status_time = now
+
+            except Exception as e:
+                print(f"Error in waypoint thread: {e}")
+
+            elapsed = time.time() - loop_start
+            self.waypoint_loop_times.append(elapsed)
+            sleep_time = self._waypoint_dt - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        print("Waypoint thread stopped")
+
     def _ik_thread(self, stop_event: threading.Event):
         """Dedicated thread for IK computation"""
         print("Starting IK thread...")
@@ -574,23 +612,70 @@ class HardwareTeleopController:
         print("IK thread stopped")
 #要先确认有目标，要么就在init的时候把机械臂的坐标赋值到placo去
     def _control_thread(self, stop_event: threading.Event):
-        """Dedicated thread for sending commands to robot"""
-        print("Starting control thread...")
-        
+        """低层控制 loop：1kHz 读硬件位置→写缓存→Ruckig→发UDP速度"""
+        print(f"Starting control thread at {self.control_rate_hz_ll}Hz...")
+
+        status_print_interval = 2.0
+        last_status_time = time.time()
+
         while not stop_event.is_set():
-            start_time = time.time()
-            
+            loop_start = time.time()
             try:
-                self._send_command()
+                # 1) 高频直接读硬件位置（deg）
+                current_pos_deg = self.robot_controller.get_joint_positions()
+                if len(current_pos_deg) < 7:
+                    # 读失败则维持频率
+                    time.sleep(self._control_dt_ll)
+                    continue
+                current_pos_deg = np.array(current_pos_deg, dtype=float)
+
+                # 2) 把最新硬件位置写入缓存，供 IK 线程使用
+                with self._robot_state_lock:
+                    self._robot_pos_deg_cache = current_pos_deg.copy()
+
+                # 3) Ruckig 走一步（用硬件读到的 current_pos）
+                target_vel_deg_s, target_pos_deg, _ = self.ruckig_planner.compute_trajectory_step(
+                    current_pos_deg
+                )
+                v_cmd = np.nan_to_num(target_vel_deg_s, nan=0.0, posinf=0.0, neginf=0.0)
+                v_cmd = np.clip(
+                    v_cmd,
+                    -self.ruckig_planner.max_velocity,
+                    self.ruckig_planner.max_velocity
+                )
+                # 4) 直接**发速度**UDP（优先尝试 set_joint_speeds_udp）
+                global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
+                ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
+                if not ret.get("ok", False):
+                    print(f"[WARN] send_joint_speeds_udp failed: {ret.get('err')}")
+                    self.robot_controller.send_joint_speeds_udp(np.zeros_like(v_cmd), speed_cap=global_cap)
+                
+
+                # 周期状态打印
+                now = time.time()
+                if now - last_status_time > status_print_interval:
+                    status = self.ruckig_planner.get_status()
+                    avg_ctrl = (np.mean(self.control_loop_times) * 1000) if self.control_loop_times else 0.0
+                    avg_wp = (np.mean(self.waypoint_loop_times) * 1000) if self.waypoint_loop_times else 0.0
+                    print(f"[CTRL] vel={status['current_velocity_norm']:.1f}°/s "
+                        f"tgtVel={status['filtered_target_velocity_norm']:.1f}°/s "
+                        f"steps={status['trajectory_steps']} "
+                        f"loop={avg_ctrl:.1f}ms wp_loop={avg_wp:.1f}ms")
+                    last_status_time = now
+
             except Exception as e:
                 print(f"Error in control thread: {e}")
-            
-            # Maintain loop rate
-            elapsed_time = time.time() - start_time
-            sleep_time = (1.0 / self.control_rate_hz) - elapsed_time
+
+            # 定频
+            elapsed = time.time() - loop_start
+            self.control_loop_times.append(elapsed)
+            sleep_time = self._control_dt_ll - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
-        
+            elif elapsed > self._control_dt_ll * 2:
+                print(f"Warning: Control loop overrun ({elapsed*1000:.1f}ms)")
+
+
         print("Control thread stopped")
         self._shutdown_robot()
 
@@ -638,23 +723,34 @@ class HardwareTeleopController:
         # Initialize timing
         self._start_time = time.time()
         self._stop_event = threading.Event()
-        
+        self.robot_controller.enter_velocity_control()
         # Create and start threads
         threads = []
         
-        # Core control threads
+        # 1) IK 线程
         ik_thread = threading.Thread(
             name="IK_Thread", 
             target=self._ik_thread, 
             args=(self._stop_event,)
         )
-        control_thread = threading.Thread(
-            name="Control_Thread", 
-            target=self._control_thread, 
+        threads.append(ik_thread)
+
+        # 2) Waypoint 线程（新增）
+        wp_thread = threading.Thread(
+            name="Waypoint_Thread",
+            target=self._waypoint_thread,
             args=(self._stop_event,)
         )
+        threads.append(wp_thread)
+
+        # 3) 控制线程
+        ctrl_thread = threading.Thread(
+            name="Control_Thread",
+            target=self._control_thread,
+            args=(self._stop_event,)
+        )
+        threads.append(ctrl_thread)
         
-        threads.extend([ik_thread, control_thread])
         
         # Optional logging thread
         if self.enable_log_data:

@@ -314,7 +314,7 @@ class RuckigTrajectoryPlanner:
         self.otg = Ruckig(self.dof, self.control_cycle)
         
         self.trajectory_steps = 0
-    
+    #set的时候要顺便能够设置一下当前位置
     def set_simulation_mode(self, enabled: bool):
         """Enable or disable simulation mode."""
         self.simulation_mode = enabled

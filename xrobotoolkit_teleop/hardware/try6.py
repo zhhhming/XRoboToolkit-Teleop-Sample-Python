@@ -1,7 +1,7 @@
 import numpy as np
-a=np.arange(12)
-a=np.clip(a,2,8)
+a=np.array([2,3,4,5,6,9])
+
 print(a)
-b=np.ones(12)
-c=(a-b)/0.01
-print(c)
+b=np.array([1,2,1,3,1,6])
+a=np.clip(a,-b,b)
+print(a)
