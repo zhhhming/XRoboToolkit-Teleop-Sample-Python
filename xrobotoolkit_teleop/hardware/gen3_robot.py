@@ -341,16 +341,22 @@ class KortexRobotController:
         # 6) 帧号自增（16位回绕）
         self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
         self.base_command.frame_id = self._frame_id
-
+        MAX_RETRIES = 3
+    
+        for attempt in range(MAX_RETRIES):
         # 7) 发送一帧
-        try:
-            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
-            return {"ok": True}
-        except KServerException as e:
-            cur = self.base_client.GetServoingMode().servoing_mode
-            return {"ok": False, "err": f"KServerException: {e} | servo={Base_pb2.ServoingMode.Name(cur)}"}
-        except Exception as e:
-            return {"ok": False, "err": f"{e}"}
+            try:
+                self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+                return {"ok": True}
+            except KServerException as e:
+                if attempt < MAX_RETRIES - 1:
+                    print(f"[WARN] Attempt {attempt+1} failed, retrying: {e}")
+                    time.sleep(0.001)  # 短暂延迟后重试
+                    continue
+                else:
+                    return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
+            except Exception as e:
+                return {"ok": False, "err": f"{e}"}
 
 
 
@@ -599,7 +605,23 @@ class KortexRobotController:
         except Exception as e:
             print(f"ERROR getting joint positions: {e}")
             return np.array([])
-    
+        
+    def get_joint_speeds(self):
+        """
+        Get current joint velocities
+
+        Returns:
+            numpy array of current joint velocities (in degrees/second)
+        """
+        try:
+            feedback = self.base_cyclic_client.RefreshFeedback()
+            speeds = []
+            for actuator in feedback.actuators:
+                speeds.append(actuator.velocity)  # deg/s from BaseCyclic feedback
+            return np.array(speeds, dtype=float)
+        except Exception as e:
+            print(f"ERROR getting joint speeds: {e}")
+            return np.array([])
     def get_tool_pose(self):
         """
         Get current tool pose

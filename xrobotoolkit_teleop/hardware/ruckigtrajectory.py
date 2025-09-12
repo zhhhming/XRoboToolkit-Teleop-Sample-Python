@@ -149,19 +149,19 @@ class RuckigTrajectoryPlanner:
             newest_wp = self.waypoint_queue[-1]
             
             # Calculate time difference
-        dt = newest_wp['timestamp'] - oldest_wp['timestamp']
+            dt = newest_wp['timestamp'] - oldest_wp['timestamp']
             
-        if dt < 0.001:  # Avoid division by very small numbers
-            return self.filtered_target_velocity
-            
-        # Calculate instantaneous velocity
-        position_diff = newest_wp['position'] - oldest_wp['position']
-        inst_velocity = position_diff / dt
+            if dt < 0.001:  # Avoid division by very small numbers
+                return self.filtered_target_velocity
+                
+            # Calculate instantaneous velocity
+            position_diff = newest_wp['position'] - oldest_wp['position']
+            inst_velocity = position_diff / dt
             
         # Apply exponential moving average filter
         # v_filtered(k) = (1-β)*v_filtered(k-1) + β*v_inst(k)
         # β = 1 - exp(-Δt/τ)
-        beta = 1.0 - np.exp(-self.control_cycle / self.velocity_filter_tau)
+        beta = 1.0 - 0.9
         self.filtered_target_velocity = (
             (1 - beta) * self.filtered_target_velocity + 
              beta * inst_velocity
@@ -315,17 +315,30 @@ class RuckigTrajectoryPlanner:
         
         self.trajectory_steps = 0
     #set的时候要顺便能够设置一下当前位置
-    def set_simulation_mode(self, enabled: bool):
+    def set_simulation_mode(self, enabled: bool, sim_position=None):
         """Enable or disable simulation mode."""
         self.simulation_mode = enabled
-        if enabled:
-            print("Simulation mode enabled - using predicted values as feedback")
-            # Initialize simulation state with current state
-            self.sim_position = self.current_position.copy()
-            self.sim_velocity = self.current_velocity.copy()
-            self.sim_acceleration = self.current_acceleration.copy()
+        print("Simulation mode enabled - using predicted values as feedback")
+
+        # 1) 解析/推断 sim_position
+        import numpy as np
+        dof = int(getattr(self, "dof", 7))
+
+        if sim_position is None:
+            base_pos = getattr(self, "current_position", None)
+            if base_pos is None or np.size(base_pos) < dof:
+                base_pos = np.zeros(dof, dtype=float)
+            else:
+                base_pos = np.asarray(base_pos, dtype=float).reshape(-1)[:dof]
         else:
-            print("Simulation mode disabled - using real robot feedback")
+            base_pos = np.asarray(sim_position, dtype=float).reshape(-1)
+            if base_pos.size < dof:
+                raise ValueError(f"sim_position length {base_pos.size} < dof {dof}")
+            base_pos = base_pos[:dof]
+
+        self.sim_position = base_pos.copy()
+        self.sim_velocity = np.zeros(dof, dtype=float)
+        self.sim_acceleration = np.zeros(dof, dtype=float)
     
     def get_status(self) -> dict:
         """Get current planner status."""
@@ -342,261 +355,4 @@ class RuckigTrajectoryPlanner:
             'simulation_mode': self.simulation_mode
         }
 
-
-class RuckigControlInterface:
-    """
-    Interface to integrate Ruckig planner with the robot controller.
-    Manages waypoint collection and trajectory execution in separate threads.
-    """
     
-    def __init__(
-        self,
-        robot_controller,
-        planner: RuckigTrajectoryPlanner,
-        control_rate_hz: float = 1000.0,  # 1kHz for trajectory execution
-        waypoint_rate_hz: float = 100.0,   # 100Hz for waypoint collection
-    ):
-        """
-        Initialize the control interface.
-        
-        Args:
-            robot_controller: The KortexRobotController instance
-            planner: The RuckigTrajectoryPlanner instance
-            control_rate_hz: Control loop frequency in Hz
-            waypoint_rate_hz: Waypoint collection frequency in Hz
-        """
-        self.robot = robot_controller
-        self.planner = planner
-        self.control_rate_hz = control_rate_hz
-        self.waypoint_rate_hz = waypoint_rate_hz
-        self.control_dt = 1.0 / control_rate_hz
-        self.waypoint_dt = 1.0 / waypoint_rate_hz
-        
-        # Thread control
-        self._stop_event = threading.Event()
-        self._control_thread = None
-        self._waypoint_thread = None
-        
-        # Shared state for IK targets
-        self._target_position_lock = threading.Lock()
-        self._latest_ik_target = None
-        
-        # Performance tracking
-        self.control_loop_times = deque(maxlen=100)
-        self.waypoint_loop_times = deque(maxlen=100)
-        
-    def set_ik_target(self, target_position: np.ndarray):
-        """
-        Called by IK thread to set new target position.
-        """
-        with self._target_position_lock:
-            self._latest_ik_target = target_position.copy()
-    
-    def _waypoint_collection_loop(self):
-        """Separate thread for collecting waypoints from IK at higher frequency."""
-        print(f"Starting waypoint collection loop at {self.waypoint_rate_hz}Hz...")
-        
-        last_target = None
-        
-        while not self._stop_event.is_set():
-            loop_start = time.time()
-            
-            try:
-                # Check for new IK target
-                with self._target_position_lock:
-                    if self._latest_ik_target is not None:
-                        new_target = self._latest_ik_target.copy()
-                        self._latest_ik_target = None
-                    else:
-                        new_target = None
-                
-                # Add waypoint if we have a new target
-                if new_target is not None:
-                    # Only add if significantly different from last target
-                    if last_target is None or np.linalg.norm(new_target - last_target) > 0.05:
-                        self.planner.add_waypoint(new_target)
-                        last_target = new_target
-                
-            except Exception as e:
-                print(f"Error in waypoint collection: {e}")
-            
-            # Maintain loop rate
-            elapsed = time.time() - loop_start
-            self.waypoint_loop_times.append(elapsed)
-            
-            sleep_time = self.waypoint_dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-        
-        print("Waypoint collection loop stopped")
-    
-    def _control_loop(self):
-        """Main control loop for trajectory execution."""
-        print(f"Starting Ruckig control loop at {self.control_rate_hz}Hz...")
-        
-        # Ensure robot is in low-level mode
-        if not self.planner.simulation_mode and not self.robot.in_low_level_mode:
-            self.robot.enter_low_level_mode()
-        
-        status_print_interval = 2.0  # Print status every 2 seconds
-        last_status_time = time.time()
-        
-        while not self._stop_event.is_set():
-            loop_start = time.time()
-            
-            try:
-                # Get current robot state
-                if not self.planner.simulation_mode:
-                    current_pos = self.robot.get_joint_positions()
-                    if len(current_pos) < 7:
-                        print("Warning: Invalid joint position reading")
-                        time.sleep(self.control_dt)
-                        continue
-                else:
-                    # In simulation mode, use the planner's simulated position
-                    current_pos = self.planner.sim_position
-                
-                # Compute trajectory step
-                target_velocity, target_position, reached = self.planner.compute_trajectory_step(
-                    current_pos
-                )
-                
-                # Send commands to robot (only if not in simulation mode)
-                if not self.planner.simulation_mode:
-                    # Send velocity command via UDP
-                    result = self.robot.set_joint_positions_udp(
-                        target_position,  # For position tracking
-                        kp=0.0,  # Pure velocity control
-                        vel_cap=np.max(np.abs(target_velocity)),
-                        tol=0.5
-                    )
-                
-                # Print status periodically
-                current_time = time.time()
-                if current_time - last_status_time > status_print_interval:
-                    status = self.planner.get_status()
-                    avg_control_time = np.mean(list(self.control_loop_times)) * 1000 if self.control_loop_times else 0
-                    avg_waypoint_time = np.mean(list(self.waypoint_loop_times)) * 1000 if self.waypoint_loop_times else 0
-                    
-                    print(f"Status: WP={status['num_waypoints']}, "
-                          f"Vel={status['current_velocity_norm']:.1f}°/s, "
-                          f"TargetVel={status['filtered_target_velocity_norm']:.1f}°/s, "
-                          f"Steps={status['trajectory_steps']}, "
-                          f"Control={avg_control_time:.1f}ms, "
-                          f"WP_collect={avg_waypoint_time:.1f}ms")
-                    
-                    last_status_time = current_time
-                
-            except Exception as e:
-                print(f"Error in control loop: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            # Track loop timing
-            elapsed = time.time() - loop_start
-            self.control_loop_times.append(elapsed)
-            
-            # Maintain control rate
-            sleep_time = self.control_dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            elif elapsed > self.control_dt * 2:
-                print(f"Warning: Control loop overrun ({elapsed*1000:.1f}ms)")
-        
-        # Exit low-level mode when stopping (if not in simulation)
-        if not self.planner.simulation_mode and self.robot.in_low_level_mode:
-            self.robot.exit_low_level_mode()
-        
-        print("Ruckig control loop stopped")
-    
-    def start(self):
-        """Start both waypoint collection and control threads."""
-        if self._control_thread is not None and self._control_thread.is_alive():
-            print("Control threads already running")
-            return
-        
-        self._stop_event.clear()
-        
-        # Start waypoint collection thread
-        self._waypoint_thread = threading.Thread(
-            target=self._waypoint_collection_loop,
-            name="WaypointCollectionThread"
-        )
-        self._waypoint_thread.daemon = True
-        self._waypoint_thread.start()
-        
-        # Start control thread
-        self._control_thread = threading.Thread(
-            target=self._control_loop,
-            name="RuckigControlThread"
-        )
-        self._control_thread.daemon = True
-        self._control_thread.start()
-        
-        print("Ruckig control interface started")
-    
-    def stop(self):
-        """Stop all threads."""
-        print("Stopping Ruckig control interface...")
-        self._stop_event.set()
-        
-        # Wait for threads to stop
-        for thread, name in [(self._waypoint_thread, "Waypoint"), 
-                             (self._control_thread, "Control")]:
-            if thread is not None:
-                thread.join(timeout=2.0)
-                if thread.is_alive():
-                    print(f"Warning: {name} thread did not stop gracefully")
-        
-        print("Ruckig control interface stopped")
-    
-    def test_without_robot(self, duration: float = 10.0):
-        """
-        Test the planner in simulation mode without robot hardware.
-        
-        Args:
-            duration: Test duration in seconds
-        """
-        print(f"Testing in simulation mode for {duration} seconds...")
-        
-        # Enable simulation mode
-        self.planner.set_simulation_mode(True)
-        
-        # Start threads
-        self.start()
-        
-        # Generate test waypoints
-        start_time = time.time()
-        waypoint_interval = 0.5  # New waypoint every 500ms
-        last_waypoint_time = start_time
-        
-        try:
-            while time.time() - start_time < duration:
-                current_time = time.time()
-                
-                # Generate new waypoint periodically
-                if current_time - last_waypoint_time >= waypoint_interval:
-                    # Generate sinusoidal test pattern
-                    t = current_time - start_time
-                    test_position = np.array([
-                        20 * np.sin(0.5 * t),
-                        15 * np.cos(0.3 * t),
-                        10 * np.sin(0.7 * t),
-                        0, 0, 0, 0
-                    ])
-                    self.set_ik_target(test_position)
-                    last_waypoint_time = current_time
-                    print(f"Test waypoint at t={t:.1f}s: [{test_position[0]:.1f}, {test_position[1]:.1f}, {test_position[2]:.1f}, ...]")
-                
-                time.sleep(0.1)
-                
-        except KeyboardInterrupt:
-            print("Test interrupted")
-        
-        # Stop and report
-        self.stop()
-        status = self.planner.get_status()
-        print(f"\nTest completed:")
-        print(f"  Waypoints processed: {status['waypoints_processed']}")
-        print(f"  Trajectory steps: {status['trajectory_steps']}")
-        print(f"  Final velocity: {status['current_velocity_norm']:.2f}°/s")

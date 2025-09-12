@@ -20,7 +20,7 @@ from placo_utils.visualization import (
 from google.protobuf import json_format
 
 from xrobotoolkit_teleop.hardware.gen3_robot import KortexRobotController
-from xrobotoolkit_teleop.hardware.ruckigtrajectory   import RuckigTrajectoryPlanner, RuckigControlInterface 
+from xrobotoolkit_teleop.hardware.ruckigtrajectory   import RuckigTrajectoryPlanner
 from xrobotoolkit_teleop.common.xr_client import XrClient
 from xrobotoolkit_teleop.utils.geometry import (
     R_HEADSET_TO_WORLD,
@@ -121,6 +121,8 @@ class HardwareTeleopController:
                 "joint_6": 5, 
                 "joint_7": 6,
             }  # Map from placo joints to robot joints
+        else:
+            self.joint_name_to_robot_index = joint_name_to_robot_index
         
         # Control parameters
         self.control_rate_hz = control_rate_hz
@@ -144,7 +146,6 @@ class HardwareTeleopController:
         # Robot controller
         self.robot_controller = None
         self.ruckig_planner = None
-        self.ruckig_controller= None
         
         # Control state variables
         self.ref_ee_xyz = {name: None for name in manipulator_config.keys()}
@@ -163,20 +164,21 @@ class HardwareTeleopController:
         self._target_position_lock = threading.Lock()
         self._latest_ik_target = None
 
-        # 机器人状态缓存（deg），由 IK 线程刷新，控制线程只读
+        # 机器人状态缓存（deg），由 控制线程刷新，IK线程只读
         self._robot_state_lock = threading.Lock()
-        self._robot_pos_deg_cache = np.zeros(7)
+        self._robot_pos_deg_cache = np.zeros(7, dtype=float)  # control 写、IK 读
+        self._simulation_mode = True  # 新增：simulation模式标志
 
         # Ruckig 线程频率与计时 deque（ms）
         from collections import deque
         self.waypoint_rate_hz = 100.0      # 你可按需改
-        self.control_rate_hz_ll = 1000.0   # 低层控制 1 kHz
+        self.control_rate_hz_ll = 300.0   # 低层控制 1 kHz
         self._waypoint_dt = 1.0 / self.waypoint_rate_hz
         self._control_dt_ll = 1.0 / self.control_rate_hz_ll
         self.control_loop_times = deque(maxlen=100)
         self.waypoint_loop_times = deque(maxlen=100)
-        self._robot_state_lock = threading.Lock()
-        self._robot_pos_deg_cache = np.zeros(7, dtype=float)  # control 写、IK 读
+        self.control_second = 1/self.control_rate_hz_ll
+        
         
         # Initialize gripper positions
         for name, config in self.manipulator_config.items():
@@ -190,14 +192,19 @@ class HardwareTeleopController:
         print("Setting up robot hardware...")
         
         # Initialize robot controller
-        self.robot_controller = KortexRobotController()
-        self.ruckig_planner = RuckigTrajectoryPlanner()
-        self.ruckig_controller = RuckigControlInterface(self.robot_controller, self.ruckig_planner)
-        
-        # Home the robot
-        print("Homing robot...")
-        if not self.robot_controller.home_robot():
-            raise RuntimeError("Failed to home robot")
+        if not self._simulation_mode:
+            self.robot_controller = KortexRobotController() 
+                # Home the robot
+            print("Homing robot...")
+            if not self.robot_controller.home_robot():
+                raise RuntimeError("Failed to home robot")
+        self.ruckig_planner = RuckigTrajectoryPlanner(control_cycle=self.control_second)
+        if self._simulation_mode:
+            self.ruckig_planner.set_simulation_mode(self._simulation_mode,[290, 15.9, 179, 229, 0, 54, 9])
+       
+        ok = self._initial_robot_pos_deg_cache()
+        print("[INFO] initial pos cache from {}."
+            .format("sim/hw" if ok else "zeros (fallback)"))
         
         
         print("Robot setup completed successfully")
@@ -288,6 +295,7 @@ class HardwareTeleopController:
                 frame_viz(f"vis_target_{name}", target_frame)
             else:
                 frame_viz(f"vis_target_{name}", self.effector_task[name].T_world_frame)
+
     def _idxq_nq(self, joint_name: str):
         """返回该关节在 q 中的起始 idx 和维度 nq"""
         jid = self.placo_robot.model.getJointId(joint_name)
@@ -342,8 +350,68 @@ class HardwareTeleopController:
             raise ValueError("robot_deg must have 7 elements.")
         for name, idx in self.joint_name_to_robot_index.items():
             self._write_joint_rad(name, np.radians(float(robot_deg[idx])))
-            print(np.radians(float(robot_deg[idx])))
+            print(f"deg to {name}:{np.radians(float(robot_deg[idx]))}")
+    def _initial_robot_pos_deg_cache(self, *, max_retries: int = 8) -> bool:
+        """
+        Prime the joint-position cache before control threads start.
+        Ensures _update_robot_state() can read a valid vector from _robot_pos_deg_cache.
 
+        Returns:
+            True  -> initialized from sim/hardware data
+            False -> fell back to zeros
+        """
+        dof = int(getattr(self, "dof", 7))
+        dt  = float(getattr(self, "_control_dt_ll", 0.004))
+
+        pos = None
+
+        # 1) Simulation snapshot (if any)
+        try:
+            if getattr(self, "_simulation_mode", False):
+                sim_pos = np.asarray(self.ruckig_planner.sim_position, dtype=float).reshape(-1)
+                if sim_pos.size >= dof and np.all(np.isfinite(sim_pos[:dof])):
+                    pos = sim_pos[:dof].copy()
+        except Exception as e:
+            print(f"[WARN] initial cache: sim_position read failed: {e}")
+
+        # 2) Hardware read with retries
+        if pos is None:
+            for k in range(max_retries):
+                try:
+                    p = self.robot_controller.get_joint_positions()  # should return deg
+                    if p is None:
+                        raise ValueError("get_joint_positions() returned None")
+                    p = np.asarray(p, dtype=float).reshape(-1)
+                    if p.size >= dof and np.all(np.isfinite(p[:dof])):
+                        pos = p[:dof].copy()
+                        break
+                    else:
+                        print(f"[WARN] initial cache: invalid joint vector (shape={p.shape})")
+                except Exception as e:
+                    print(f"[WARN] initial cache: read failed (try {k+1}/{max_retries}): {e}")
+                time.sleep(dt)
+
+        # 3) Final fallback
+        used_fallback = False
+        if pos is None:
+            pos = np.zeros(dof, dtype=float)
+            used_fallback = True
+            print("[WARN] initial cache: fallback to zeros.")
+
+        # 4) Optional clamp to joint limits if provided
+        if hasattr(self, "joint_position_limits"):
+            try:
+                lo, hi = self.joint_position_limits  # expect arrays length==dof
+                pos = np.clip(pos, np.asarray(lo, float), np.asarray(hi, float))
+            except Exception as e:
+                print(f"[WARN] initial cache: joint limits clamp skipped: {e}")
+
+        # 5) Publish to cache (thread-safe)
+        with self._robot_state_lock:
+            self._robot_pos_deg_cache = pos.copy()
+
+        return not used_fallback
+    
     def _update_robot_state(self):
         """用缓存的关节角同步到 Placo（IK 线程用）"""
         try:
@@ -353,6 +421,7 @@ class HardwareTeleopController:
                 return
             self._robot_deg_to_placo(robot_positions)
             self.placo_robot.update_kinematics()
+            self.placo_vis.display(self.placo_robot.state.q)
         except Exception as e:
             print(f"Error updating robot state from cache: {e}")
 
@@ -558,7 +627,7 @@ class HardwareTeleopController:
             loop_start = time.time()
             try:
                 with self._target_position_lock:
-                    new_target = None if self._latest_ik_target is None else self._latest_ik_target.copy()
+                    new_target = None if self._latest_ik_target is None else self._latest_ik_target.copy()#不会去清理self._latest_ik_target
                     # 读后不清空，允许丢多次（由去重/阈值控制）
                 if new_target is not None:
                     if last_target is None or np.linalg.norm(new_target - last_target) > 0.05:
@@ -596,7 +665,7 @@ class HardwareTeleopController:
                 self._update_robot_state()
                 self._update_gripper_target()
                 self._update_ik()
-                
+                self._update_robot_state()
                 if self.visualize_placo:
                     self._update_placo_viz()
                     
@@ -622,20 +691,26 @@ class HardwareTeleopController:
             loop_start = time.time()
             try:
                 # 1) 高频直接读硬件位置（deg）
-                current_pos_deg = self.robot_controller.get_joint_positions()
-                if len(current_pos_deg) < 7:
-                    # 读失败则维持频率
-                    time.sleep(self._control_dt_ll)
-                    continue
-                current_pos_deg = np.array(current_pos_deg, dtype=float)
+                if self._simulation_mode:
+                    # Simulation模式：使用Ruckig的模拟位置
+                    current_pos_deg = self.ruckig_planner.sim_position.copy()
+                    current_speed = self.ruckig_planner.sim_velocity.copy()
+                else:
+                    current_pos_deg = self.robot_controller.get_joint_positions()
+                    current_speed = self.robot_controller.get_joint_speeds()
+                    if len(current_pos_deg) < 7:
+                        # 读失败则维持频率
+                        time.sleep(self._control_dt_ll)
+                        continue
+                    current_pos_deg = np.array(current_pos_deg, dtype=float)
 
                 # 2) 把最新硬件位置写入缓存，供 IK 线程使用
                 with self._robot_state_lock:
                     self._robot_pos_deg_cache = current_pos_deg.copy()
-
                 # 3) Ruckig 走一步（用硬件读到的 current_pos）
                 target_vel_deg_s, target_pos_deg, _ = self.ruckig_planner.compute_trajectory_step(
-                    current_pos_deg
+                    current_pos_deg,
+                    current_speed
                 )
                 v_cmd = np.nan_to_num(target_vel_deg_s, nan=0.0, posinf=0.0, neginf=0.0)
                 v_cmd = np.clip(
@@ -645,10 +720,11 @@ class HardwareTeleopController:
                 )
                 # 4) 直接**发速度**UDP（优先尝试 set_joint_speeds_udp）
                 global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
-                ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
-                if not ret.get("ok", False):
-                    print(f"[WARN] send_joint_speeds_udp failed: {ret.get('err')}")
-                    self.robot_controller.send_joint_speeds_udp(np.zeros_like(v_cmd), speed_cap=global_cap)
+                if not self._simulation_mode:
+                    ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
+                    if not ret.get("ok", False):
+                        print(f"[WARN] send_joint_speeds_udp failed: {ret.get('err')}")
+                        self.robot_controller.send_joint_speeds_udp(np.zeros_like(v_cmd), speed_cap=global_cap)
                 
 
                 # 周期状态打印
@@ -723,7 +799,8 @@ class HardwareTeleopController:
         # Initialize timing
         self._start_time = time.time()
         self._stop_event = threading.Event()
-        self.robot_controller.enter_velocity_control()
+        if not self._simulation_mode:
+            self.robot_controller.enter_velocity_control()
         # Create and start threads
         threads = []
         
@@ -788,7 +865,7 @@ class HardwareTeleopController:
                 thread.join(timeout=2.0)
                 if thread.is_alive():
                     print(f"Warning: {thread.name} did not shut down gracefully")
-            
+            self._shutdown_robot()
             print("All threads shut down.")
 
 
@@ -801,10 +878,10 @@ if __name__ == "__main__":
             "pose_source": "right_controller",
             "control_trigger": "right_trigger",
             "control_mode": "pose",  
-            "gripper_config": {
-                "type": "parallel",
-                "gripper_trigger": "right_grip",
-            }
+            # "gripper_config": {
+            #     "type": "parallel",
+            #     "gripper_trigger": "right_grip",
+            # }
         }
     }
     
@@ -819,8 +896,8 @@ if __name__ == "__main__":
             R_headset_world=R_headset_world,
             scale_factor=1.0,
             visualize_placo=True,
-            control_rate_hz=100,
-            enable_log_data=True,
+            control_rate_hz=200,
+            enable_log_data=False,
             log_dir="teleop_logs",
             log_freq=50.0,
         )
@@ -831,5 +908,3 @@ if __name__ == "__main__":
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
-
-#floating base去掉，send control前，先让placo和机械臂关节位置一致
