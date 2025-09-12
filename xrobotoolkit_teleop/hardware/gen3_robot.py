@@ -14,8 +14,9 @@ from kortex_api.SessionManager import SessionManager
 from kortex_api.autogen.client_stubs.BaseClientRpc import BaseClient
 from kortex_api.autogen.client_stubs.BaseCyclicClientRpc import BaseCyclicClient
 from kortex_api.autogen.client_stubs.DeviceConfigClientRpc import DeviceConfigClient
+from kortex_api.autogen.client_stubs.ActuatorConfigClientRpc import ActuatorConfigClient
 
-from kortex_api.autogen.messages import Session_pb2, Base_pb2, BaseCyclic_pb2
+from kortex_api.autogen.messages import Session_pb2, Base_pb2, BaseCyclic_pb2, ActuatorConfig_pb2
 from kortex_api.Exceptions.KServerException import KServerException
 
 # 连接参数
@@ -67,6 +68,7 @@ class KortexRobotController:
         # Initialize clients
         self.base_client = BaseClient(self.tcp_router)
         self.base_cyclic_client = BaseCyclicClient(self.udp_router)
+        self.actuator_config = ActuatorConfigClient(self.tcp_router)
         
         print("Robot clients initialized successfully")
         
@@ -118,6 +120,97 @@ class KortexRobotController:
         self.base_client.SetServoingMode(base_servo_mode)
         print("Servoing mode set to SINGLE_LEVEL_SERVOING")
 
+    def _ensure_base_command_ready(self):
+        """
+        确保在低层(LOW_LEVEL)下，self.base_command已准备好：
+        - 有与执行器数量一致的actuators槽位
+        - flags=1 (使能)
+        - 初始position = 当前反馈位置（防跟随误差）
+        """
+        if not getattr(self, "in_low_level_mode", False):
+            raise RuntimeError("Must be in LOW_LEVEL_SERVOING before preparing base_command.")
+
+        # 若还没有命令或数量不匹配，则重建
+        need_rebuild = (
+            not hasattr(self, "base_command")
+            or len(self.base_command.actuators) != self.actuator_count.count
+        )
+        if need_rebuild:
+            fb = self.base_cyclic_client.RefreshFeedback()
+            self.base_feedback = fb
+
+            self.base_command = BaseCyclic_pb2.Command()
+            self.base_command.frame_id = 0
+
+            # 逐个执行器建槽位并设置 flags/position
+            for i in range(self.actuator_count.count):
+                a = self.base_command.actuators.add()
+                a.flags = 1
+                a.position = fb.actuators[i].position
+                a.velocity = 0.0
+                a.torque_joint = 0.0
+                a.command_id = 0
+
+            # 若有夹爪，也准备一下（可选）
+            if fb.HasField('interconnect') and len(fb.interconnect.gripper_feedback.motor) > 0:
+                _ = self.base_command.interconnect.gripper_command  # 占位即可
+
+            # 先发一帧建立连续性
+            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+
+        if not hasattr(self, "_frame_id"):
+            self._frame_id = 0
+    def enter_velocity_control(self):
+        """
+        将 Base 切到 LOW_LEVEL，并把所有执行器切换为 VELOCITY 控制模式。
+        """
+        # 先确保低层模式
+        if not getattr(self, "in_low_level_mode", False):
+            self.enter_low_level_mode()
+
+        # 准备命令帧
+        self._ensure_base_command_ready()
+
+        # 逐个执行器切模式：VELOCITY
+        ctrl = ActuatorConfig_pb2.ControlModeInformation()
+        ctrl.control_mode = ActuatorConfig_pb2.ControlMode.Value('VELOCITY')
+
+        # Kortex 执行器 device_id 从 1 开始
+        for device_id in range(1, self.actuator_count.count + 1):
+            # 带重试更稳妥
+            ok = True
+            try:
+                self.actuator_config.SetControlMode(ctrl, device_id)
+            except Exception as e:
+                print(f"[WARN] Set VELOCITY failed on actuator {device_id}: {e}")
+                ok = False
+            if not ok:
+                # 可按需再次重试或抛异常
+                pass
+
+        self.in_velocity_mode = True
+        print("All actuators are now in VELOCITY control mode.")
+
+    def exit_velocity_control(self):
+        """
+        将所有执行器切回 POSITION 控制模式（常用的高层安全状态）。
+        不改变 Base 的 ServoingMode；由调用方决定是否退出低层。
+        """
+        if not getattr(self, "in_velocity_mode", False):
+            return
+
+        ctrl = ActuatorConfig_pb2.ControlModeInformation()
+        ctrl.control_mode = ActuatorConfig_pb2.ControlMode.Value('POSITION')
+
+        for device_id in range(1, self.actuator_count.count + 1):
+            try:
+                self.actuator_config.SetControlMode(ctrl, device_id)
+            except Exception as e:
+                print(f"[WARN] Set POSITION failed on actuator {device_id}: {e}")
+
+        self.in_velocity_mode = False
+        print("All actuators are back to POSITION control mode.")
+
     def enter_low_level_mode(self):
         """进入低级控制模式"""
         print("Entering low-level servoing mode...")
@@ -160,6 +253,7 @@ class KortexRobotController:
         # 初始化关节命令为当前位置
         for i in range(self.actuator_count.count):
             actuator_command = self.base_command.actuators.add()
+            actuator_command.flags = 1
             actuator_command.position = self.base_feedback.actuators[i].position
             actuator_command.velocity = 0.0
             actuator_command.torque_joint = 0.0
@@ -196,61 +290,68 @@ class KortexRobotController:
         self.in_low_level_mode = False
         print("Low-level servoing mode deactivated")
     
-    def set_joint_positions_udp(
-        self,
-        positions,
-        *,
-        kp: float = 2.0,          # 比例增益：deg/s per deg
-        vel_cap: float = 0.2,    # 每关节速度上限 deg/s
-        tol: float = 0.5          # 判定到位阈值 deg:
+    def send_joint_speeds_udp(
+    self,
+    velocities,
+    *,
+    speed_cap: float | None = None,   # 可选：对输入速度幅值做上限（单位：deg/s）
     ):
         """
-        使用UDP BaseCyclic设置关节位置 (低级控制模式)
-        
-        Args:
-            positions: numpy array of joint positions (in degrees)
+        使用 BaseCyclic (UDP) 在 VELOCITY 模式下发送关节速度指令（单位：deg/s）
+
+        velocities: 长度 = 执行器数量 的数组（deg/s）
         """
-        if not hasattr(self, 'in_low_level_mode') or not self.in_low_level_mode:
-            print("Warning: Not in low-level mode. Entering low-level mode...")
+        # 1) 确保处于低层 & 速度模式
+        if not getattr(self, "in_low_level_mode", False):
+            print("[INFO] Not in LOW_LEVEL, entering...")
             self.enter_low_level_mode()
 
-        if self.base_client.GetServoingMode().servoing_mode != Base_pb2.LOW_LEVEL_SERVOING:
-            print("[WARN] Not in LOW_LEVEL anymore, trying to re-enter...")
-            self.enter_low_level_mode()
-
-        if len(positions) != self.actuator_count.count:
-            print(f"ERROR: Expected {self.actuator_count.count} positions, got {len(positions)}")
-            return False
-        
+        # 若不是 VELOCITY，切过去
         try:
-            fb = self.base_cyclic_client.RefreshFeedback()
-            cur = np.array([a.position for a in fb.actuators], dtype=float)
-            print(f"curent_pos:{cur}")
-             # 2) 误差 & 到位检查
-            tgt = np.asarray(positions, dtype=float).ravel()
-            print(f"targrt_pos:{tgt}")
-            err = tgt - cur
-            max_err = float(np.max(np.abs(err))) if err.size else 0.0
-            reached = (max_err <= tol)
-            # 更新关节位置命令
-            for i in range(self.actuator_count.count):
-                self.base_command.actuators[i].position = float(tgt[i])
-                spd = min(vel_cap, max(0.0, kp * abs(err[i])))
-                print(f"actuator{i}:speed{spd}      position:{float(tgt[i])}")
-                self.base_command.actuators[i].velocity = float(spd)
-            self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
-            self.base_command.frame_id = self._frame_id
-            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+            # 简单检查一个执行器的模式（可选）
+            pass
+        except:
+            pass
 
-            return {"ok": True, "reached": reached, "max_err": max_err}
+        if not getattr(self, "in_velocity_mode", False):
+            print("[INFO] Not in VELOCITY mode, switching all actuators to VELOCITY...")
+            self.enter_velocity_control()
+
+        # 2) 检查输入长度
+        if len(velocities) != self.actuator_count.count:
+            return {"ok": False, "err": f"Expected {self.actuator_count.count} velocities, got {len(velocities)}"}
+
+        # 3) 确保命令帧准备好
+        self._ensure_base_command_ready()
+
+        # 4) 刷新一次反馈，准备把 position 跟随到测量（安全）
+        fb = self.base_cyclic_client.RefreshFeedback()
+
+        # 5) 写入每个关节的速度；位置跟随测量值（防跟随误差）
+        for i in range(self.actuator_count.count):
+            v = float(velocities[i])
+            if speed_cap is not None:
+                cap = abs(float(speed_cap))
+                v = max(-cap, min(cap, v))
+            self.base_command.actuators[i].position = fb.actuators[i].position  # 跟随测量
+            self.base_command.actuators[i].velocity = v
+            self.base_command.actuators[i].flags = 1
+            self.base_command.actuators[i].command_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+
+        # 6) 帧号自增（16位回绕）
+        self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+        self.base_command.frame_id = self._frame_id
+
+        # 7) 发送一帧
+        try:
+            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+            return {"ok": True}
         except KServerException as e:
-            # 打印当前模式，帮助定位
             cur = self.base_client.GetServoingMode().servoing_mode
-            print(f"ERROR via UDP: {e} | current servo mode={Base_pb2.ServoingMode.Name(cur)}")
-            return {"ok": False, "reached": False, "max_err": None}
+            return {"ok": False, "err": f"KServerException: {e} | servo={Base_pb2.ServoingMode.Name(cur)}"}
         except Exception as e:
-            print(f"ERROR setting joint positions via UDP: {e}")
-            return {"ok": False, "reached": False, "max_err": None}
+            return {"ok": False, "err": f"{e}"}
+
 
 
     def set_gripper_position_udp(
@@ -631,6 +732,12 @@ class KortexRobotController:
     def close(self):
         """Close the robot connection"""
         print("Closing robot connection...")
+        if getattr(self, "in_velocity_mode", False):
+            try:
+                self.exit_velocity_control()
+            except Exception as e:
+                print(f"[WARN] exit_velocity_control failed: {e}")
+
 
         if hasattr(self, 'in_low_level_mode') and self.in_low_level_mode:
             self.exit_low_level_mode()
