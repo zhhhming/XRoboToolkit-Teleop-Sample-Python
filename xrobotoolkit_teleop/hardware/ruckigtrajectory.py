@@ -154,15 +154,20 @@ class RuckigTrajectoryPlanner:
             
             if dt < 0.001:  # Avoid division by very small numbers
                 return self.filtered_target_velocity
-                
+            
+            newest_wp['position'] = np.array([
+                self.to_nearest_equivalent_angle(newest_wp['position'][i], cur_pos[i])
+                for i in range(self.dof)
+            ])
+            oldest_wp['position'] = np.array([
+                self.to_nearest_equivalent_angle(oldest_wp['position'][i], cur_pos[i])
+                for i in range(self.dof)
+            ])
             # Calculate instantaneous velocity
             position_diff = newest_wp['position'] - oldest_wp['position']
             inst_velocity = position_diff / dt
-            adjusted_target = np.array([
-                self.to_nearest_equivalent_angle(self.waypoints[-1][i], cur_pos[i])
-                for i in range(self.dof)
-            ])
-            desired_dir = adjusted_target - cur_pos
+            
+            desired_dir = newest_wp - cur_pos
             # 小距离死区：距离很小时（例如 < 0.5°）认为不需要速度
             dist_deadband = 0.5
             near_mask = np.abs(desired_dir) < dist_deadband
@@ -295,7 +300,7 @@ class RuckigTrajectoryPlanner:
         self.input_param.current_acceleration = self.current_acceleration.tolist()
         
         # Set target position
-        self.input_param.target_position = target_position.tolist()
+        self.input_param.target_position = adjusted_target.tolist()
         
         # Estimate target velocity based on waypoint history for smooth pass-through
         target_velocity = self.estimate_target_velocity()
