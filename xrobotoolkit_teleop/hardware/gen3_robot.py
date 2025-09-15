@@ -331,7 +331,8 @@ class KortexRobotController:
         for i in range(self.actuator_count.count):
             v = float(velocities[i])
             if speed_cap is not None:
-                cap = abs(float(speed_cap))
+                # cap = abs(float(speed_cap))
+                cap = abs(float(20))
                 v = max(-cap, min(cap, v))
             self.base_command.actuators[i].position = fb.actuators[i].position  # 跟随测量
             self.base_command.actuators[i].velocity = v
@@ -598,7 +599,10 @@ class KortexRobotController:
             positions = []
             
             for actuator in feedback.actuators:
-                positions.append(actuator.position)
+                deg=actuator.position
+                if deg >= 180.0:
+                    deg -= 360.0
+                positions.append(deg)
             
             return np.array(positions)
         

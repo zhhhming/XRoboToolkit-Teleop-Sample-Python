@@ -45,11 +45,11 @@ class RuckigTrajectoryPlanner:
         
         # Set default limits if not provided
         if max_velocity is None:
-            max_velocity = [50.0] * dof  # 50 deg/s default
+            max_velocity = [10.0] * dof  # 50 deg/s default
         if max_acceleration is None:
-            max_acceleration = [100.0] * dof  # 100 deg/s^2 default  
+            max_acceleration = [50.0] * dof  # 100 deg/s^2 default  
         if max_jerk is None:
-            max_jerk = [500.0] * dof  # 500 deg/s^3 default
+            max_jerk = [100.0] * dof  # 500 deg/s^3 default
             
         self.max_velocity = np.array(max_velocity)
         self.max_acceleration = np.array(max_acceleration)
@@ -137,6 +137,7 @@ class RuckigTrajectoryPlanner:
         Estimate target velocity based on waypoint history.
         Uses the trajectory of recent waypoints to predict desired velocity.
         """
+        cur_pos = self.current_position.copy()
         with self.waypoint_lock:
             if len(self.waypoint_queue) < 2:
                 return np.zeros(self.dof)
@@ -157,7 +158,14 @@ class RuckigTrajectoryPlanner:
             # Calculate instantaneous velocity
             position_diff = newest_wp['position'] - oldest_wp['position']
             inst_velocity = position_diff / dt
-            
+
+            desired_dir = newest_wp['position'] - cur_pos      # deg
+            # 小距离死区：距离很小时（例如 < 0.5°）认为不需要速度
+            dist_deadband = 0.5
+            near_mask = np.abs(desired_dir) < dist_deadband
+            desired_dir_sign = np.sign(desired_dir)  # -1, 0, +1
+        inst_velocity = np.asarray(inst_velocity, dtype=float)
+        inst_velocity = np.nan_to_num(inst_velocity, nan=0.0, posinf=0.0, neginf=0.0)
         # Apply exponential moving average filter
         # v_filtered(k) = (1-β)*v_filtered(k-1) + β*v_inst(k)
         # β = 1 - exp(-Δt/τ)
@@ -166,16 +174,16 @@ class RuckigTrajectoryPlanner:
             (1 - beta) * self.filtered_target_velocity + 
              beta * inst_velocity
         )
-            
+        v = self.filtered_target_velocity.copy()
+        # 不一致：sign(v) 与 desired_dir_sign 不同，且距离不在近目标死区之外
+        sign_mismatch = (np.sign(v) * desired_dir_sign) < 0
+        v[sign_mismatch] = 0.0
+        v[near_mask] = 0.0
         # Clamp to velocity limits
-        self.filtered_target_velocity = np.clip(
-            self.filtered_target_velocity,
-            -self.max_velocity * 0.5,  # Use 50% of max for target velocity
-            self.max_velocity * 0.5
-        )
+        v = np.clip(v, -0.5 * self.max_velocity, 0.5 * self.max_velocity)
         threshold = 0.5  # deg/s，可以按实际需要调整
-        self.filtered_target_velocity[np.abs(self.filtered_target_velocity) < threshold] = 0.0
-            
+        v[np.abs(v) < threshold] = 0.0
+        self.filtered_target_velocity = v
         return self.filtered_target_velocity
     
     def update_current_state(
@@ -240,7 +248,8 @@ class RuckigTrajectoryPlanner:
             current_acceleration: Current joint accelerations (deg/s^2)
             
         Returns:
-            (target_velocity, target_position, reached_target)
+                    (target_velocity, target_position, reached_target, ok)
+        ok=False 表示本周期 Ruckig 解算失败（需要上层 fallback）
         """
         # In simulation mode, use simulated feedback
         if self.simulation_mode:
@@ -256,7 +265,7 @@ class RuckigTrajectoryPlanner:
         
         if target_position is None:
             # No waypoint, maintain current position with zero velocity
-            return np.zeros(self.dof), self.current_position, True
+            return np.zeros(self.dof), self.current_position, True, True
         
         # Set current state for Ruckig
         self.input_param.current_position = self.current_position.tolist()
@@ -274,26 +283,34 @@ class RuckigTrajectoryPlanner:
         self.input_param.target_acceleration = [0.0] * self.dof
         
         # Perform trajectory calculation
-        result = self.otg.update(self.input_param, self.output_param)
+        try:
+            result = self.otg.update(self.input_param, self.output_param)
+        except Exception as e:
+            # 求解抛异常：ok=False，交给上层 fallback
+            # 用当前速度当作“保持”更安全
+            print(f"[Ruckig ERROR] Exception in update: {repr(e)}")
+            hold_vel = self.current_velocity.copy()
+            return hold_vel, self.current_position, False, False
+
         
-        # Check if we reached the target
-        reached = result == Result.Finished
         
-        # Extract new state from output
-        new_position = np.array(self.output_param.new_position)
-        new_velocity = np.array(self.output_param.new_velocity)
-        new_acceleration = np.array(self.output_param.new_acceleration)
+        if result in (Result.Working, Result.Finished):
+            new_position     = np.array(self.output_param.new_position)
+            new_velocity     = np.array(self.output_param.new_velocity)
+            new_acceleration = np.array(self.output_param.new_acceleration)
+
+            if self.simulation_mode:
+                self.sim_position     = new_position.copy()
+                self.sim_velocity     = new_velocity.copy()
+                self.sim_acceleration = new_acceleration.copy()
+
+            self.trajectory_steps += 1
+            return new_velocity, new_position, (result == Result.Finished), True
+        else:
+            # Ruckig 报错：ok=False，上层 fallback
+            hold_vel = self.current_velocity.copy()
+            return hold_vel, self.current_position, False, False
         
-        # In simulation mode, update simulated state
-        if self.simulation_mode:
-            self.sim_position = new_position.copy()
-            self.sim_velocity = new_velocity.copy()
-            self.sim_acceleration = new_acceleration.copy()
-        
-        self.trajectory_steps += 1
-        
-        return new_velocity, new_position, reached
-    
     def reset(self):
         """Reset the trajectory planner."""
         with self.waypoint_lock:

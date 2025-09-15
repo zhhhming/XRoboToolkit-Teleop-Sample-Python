@@ -167,7 +167,7 @@ class HardwareTeleopController:
         # 机器人状态缓存（deg），由 控制线程刷新，IK线程只读
         self._robot_state_lock = threading.Lock()
         self._robot_pos_deg_cache = np.zeros(7, dtype=float)  # control 写、IK 读
-        self._simulation_mode = True  # 新增：simulation模式标志
+        self._simulation_mode = False  # 新增：simulation模式标志
 
         # Ruckig 线程频率与计时 deque（ms）
         from collections import deque
@@ -194,13 +194,9 @@ class HardwareTeleopController:
         # Initialize robot controller
         if not self._simulation_mode:
             self.robot_controller = KortexRobotController() 
-                # Home the robot
-            print("Homing robot...")
-            if not self.robot_controller.home_robot():
-                raise RuntimeError("Failed to home robot")
         self.ruckig_planner = RuckigTrajectoryPlanner(control_cycle=self.control_second)
         if self._simulation_mode:
-            self.ruckig_planner.set_simulation_mode(self._simulation_mode,[290, 15.9, 179, 229, 0, 54, 9])
+            self.ruckig_planner.set_simulation_mode(self._simulation_mode,[109, -15, 179, 131, -179, 53, 8])
        
         ok = self._initial_robot_pos_deg_cache()
         print("[INFO] initial pos cache from {}."
@@ -255,7 +251,7 @@ class HardwareTeleopController:
             
             # Add manipulability task
             manipulability = self.solver.add_manipulability_task(config["link_name"], "both", 1.0)
-            manipulability.configure("manipulability", "soft", 1e-2)
+            manipulability.configure("manipulability", "soft", 1e-4)
 
         self.placo_robot.update_kinematics()
         print("Placo setup completed")
@@ -350,7 +346,6 @@ class HardwareTeleopController:
             raise ValueError("robot_deg must have 7 elements.")
         for name, idx in self.joint_name_to_robot_index.items():
             self._write_joint_rad(name, np.radians(float(robot_deg[idx])))
-            print(f"deg to {name}:{np.radians(float(robot_deg[idx]))}")
     def _initial_robot_pos_deg_cache(self, *, max_retries: int = 8) -> bool:
         """
         Prime the joint-position cache before control threads start.
@@ -420,6 +415,7 @@ class HardwareTeleopController:
             if robot_positions.size < 7:
                 return
             self._robot_deg_to_placo(robot_positions)
+            print(f"成功update degree:{robot_positions}")
             self.placo_robot.update_kinematics()
             self.placo_vis.display(self.placo_robot.state.q)
         except Exception as e:
@@ -510,7 +506,9 @@ class HardwareTeleopController:
 
         # Solve IK
         try:
+            print(f"current_pose:{np.rad2deg(self.placo_robot.state.q.copy()[7:])}")
             self.solver.solve(True)            
+            print(f"target_pose:{np.rad2deg(self.placo_robot.state.q.copy()[7:])}")
             self._set_ik_target_deg(self.placo_q_to_robot_deg())
         except RuntimeError as e:
             print(f"IK solver failed: {e}")
@@ -708,23 +706,28 @@ class HardwareTeleopController:
                 with self._robot_state_lock:
                     self._robot_pos_deg_cache = current_pos_deg.copy()
                 # 3) Ruckig 走一步（用硬件读到的 current_pos）
-                target_vel_deg_s, target_pos_deg, _ = self.ruckig_planner.compute_trajectory_step(
+                target_vel_deg_s, target_pos_deg, reached, ok = self.ruckig_planner.compute_trajectory_step(
                     current_pos_deg,
                     current_speed
                 )
-                v_cmd = np.nan_to_num(target_vel_deg_s, nan=0.0, posinf=0.0, neginf=0.0)
-                v_cmd = np.clip(
-                    v_cmd,
-                    -self.ruckig_planner.max_velocity,
-                    self.ruckig_planner.max_velocity
-                )
+                if not ok:
+                    # Ruckig 本周期解算失败 → fallback：维持当前速度，不要猛置 0
+                    v_cmd = current_speed.copy()
+                    print("[WARN] Ruckig step failed; falling back to current_speed")
+                else:
+                    v_cmd = np.nan_to_num(target_vel_deg_s, nan=0.0, posinf=0.0, neginf=0.0)
+                    # 轻微缩边，避免精度贴边
+                    vmax = self.ruckig_planner.max_velocity
+                    v_cmd = np.clip(v_cmd, -0.999 * vmax, 0.999 * vmax)
+                    print(f"vcmd:{v_cmd}")
                 # 4) 直接**发速度**UDP（优先尝试 set_joint_speeds_udp）
                 global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
                 if not self._simulation_mode:
                     ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
+                    print("send-------------------------------------------------------------")
                     if not ret.get("ok", False):
                         print(f"[WARN] send_joint_speeds_udp failed: {ret.get('err')}")
-                        self.robot_controller.send_joint_speeds_udp(np.zeros_like(v_cmd), speed_cap=global_cap)
+                        self.robot_controller.send_joint_speeds_udp(current_speed, speed_cap=global_cap)
                 
 
                 # 周期状态打印
@@ -876,11 +879,11 @@ if __name__ == "__main__":
         "right_arm": {
             "link_name": "bracelet_link",
             "pose_source": "right_controller",
-            "control_trigger": "right_trigger",
+            "control_trigger": "right_grip",
             "control_mode": "pose",  
             # "gripper_config": {
             #     "type": "parallel",
-            #     "gripper_trigger": "right_grip",
+            #     "gripper_trigger": "right_tripper",
             # }
         }
     }

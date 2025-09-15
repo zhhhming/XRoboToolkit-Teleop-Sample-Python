@@ -1,7 +1,5 @@
 import numpy as np
-a=np.array([2,3,4,5,6,9])
-
-print(a)
-b=np.array([1,2,1,3,1,6])
-a=np.clip(a,-b,b)
-print(a)
+a=np.array([290,15.9,179,229,0,54,9])
+b=np.array([179,-0.6,179,147,-136,119,82])
+print(np.deg2rad(a))
+print(np.deg2rad(b))
