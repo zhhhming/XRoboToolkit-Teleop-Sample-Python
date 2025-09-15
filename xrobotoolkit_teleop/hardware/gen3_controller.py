@@ -394,11 +394,33 @@ class HardwareTeleopController:
             used_fallback = True
             print("[WARN] initial cache: fallback to zeros.")
 
+        # 4) 将角度转换到 0-360 范围（如果有负值）
+        if pos is not None:
+            pos = np.array([angle % 360 for angle in pos])
+
         # 5) Publish to cache (thread-safe)
         with self._robot_state_lock:
             self._robot_pos_deg_cache = pos.copy()
 
         return not used_fallback
+
+    def normalize_angle_deg(self, angle_deg):
+        """将任意角度归一化到 [-180, 180] 范围"""
+        angle = angle_deg % 360
+        if angle > 180:
+            angle -= 360
+        return angle
+
+    def to_nearest_equivalent_angle(self, target_deg, current_deg):
+        """
+        将目标角度调整为离当前角度最近的等效角度
+        例如：current=10, target=350 -> 返回 -10 (而不是 350)
+        """
+        diff = target_deg - current_deg
+        # 归一化差值到 [-180, 180]
+        diff =self.normalize_angle_deg(diff)
+        # 返回最近的等效角度
+        return current_deg + diff
     
     def _update_robot_state(self):
         """用缓存的关节角同步到 Placo（IK 线程用）"""
@@ -407,8 +429,10 @@ class HardwareTeleopController:
                 robot_positions = self._robot_pos_deg_cache.copy()  # deg
             if robot_positions.size < 7:
                 return
-            self._robot_deg_to_placo(robot_positions)
-            print(f"成功update degree:{robot_positions}")
+            # 将 0-360 度转换为 -180 到 180 度再传给 Placo
+            robot_positions_normalized = np.array([self.normalize_angle_deg(angle) for angle in robot_positions])
+            self._robot_deg_to_placo(robot_positions_normalized)
+            print(f"成功update degree:{robot_positions_normalized}")
             self.placo_robot.update_kinematics()
             self.placo_vis.display(self.placo_robot.state.q)
         except Exception as e:
@@ -457,7 +481,16 @@ class HardwareTeleopController:
     
     def _set_ik_target_deg(self, q_deg: np.ndarray):
         with self._target_position_lock:
-            self._latest_ik_target = q_deg.copy()
+            if self._latest_ik_target is not None:
+                # 确保新目标与上一次目标连续
+                adjusted_target = np.array([
+                    self.to_nearest_equivalent_angle(q_deg[i], self._latest_ik_target[i])
+                    for i in range(len(q_deg))
+                ])
+                self._latest_ik_target = adjusted_target
+            else:
+                # 第一次设置，直接使用
+                self._latest_ik_target = q_deg.copy()
 
     def _update_ik(self):
         """Update inverse kinematics based on XR input"""

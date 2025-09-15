@@ -158,8 +158,11 @@ class RuckigTrajectoryPlanner:
             # Calculate instantaneous velocity
             position_diff = newest_wp['position'] - oldest_wp['position']
             inst_velocity = position_diff / dt
-
-            desired_dir = newest_wp['position'] - cur_pos      # deg
+            adjusted_target = np.array([
+                self.to_nearest_equivalent_angle(self.waypoints[-1][i], cur_pos[i])
+                for i in range(self.dof)
+            ])
+            desired_dir = adjusted_target - cur_pos
             # 小距离死区：距离很小时（例如 < 0.5°）认为不需要速度
             dist_deadband = 0.5
             near_mask = np.abs(desired_dir) < dist_deadband
@@ -232,7 +235,23 @@ class RuckigTrajectoryPlanner:
                 self.current_acceleration = self.current_acceleration.copy()
         
         self.last_update_time = current_time
-    
+    def normalize_angle_deg(self, angle_deg):
+        """将任意角度归一化到 [-180, 180] 范围"""
+        angle = angle_deg % 360
+        if angle > 180:
+            angle -= 360
+        return angle
+
+    def to_nearest_equivalent_angle(self, target_deg, current_deg):
+        """
+        将目标角度调整为离当前角度最近的等效角度
+        例如：current=10, target=350 -> 返回 -10 (而不是 350)
+        """
+        diff = target_deg - current_deg
+        # 归一化差值到 [-180, 180]
+        diff = self.normalize_angle_deg(diff)
+        # 返回最近的等效角度
+        return current_deg + diff
     def compute_trajectory_step(
         self,
         current_position: np.ndarray,
@@ -266,7 +285,10 @@ class RuckigTrajectoryPlanner:
         if target_position is None:
             # No waypoint, maintain current position with zero velocity
             return np.zeros(self.dof), self.current_position, True, True
-        
+        adjusted_target = np.array([
+            self.to_nearest_equivalent_angle(target_position[i], self.current_position[i])
+            for i in range(self.dof)
+        ])
         # Set current state for Ruckig
         self.input_param.current_position = self.current_position.tolist()
         self.input_param.current_velocity = self.current_velocity.tolist()
