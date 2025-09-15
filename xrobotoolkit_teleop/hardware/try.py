@@ -86,6 +86,23 @@ def _get_link_pose(link_name: str):
     pos = T_world_link[:3, 3]
     quat = tf.quaternion_from_matrix(T_world_link)
     return pos, quat
+def normalize_angle_deg(angle_deg):
+        """将任意角度归一化到 [-180, 180] 范围"""
+        angle = angle_deg % 360
+        if angle > 180:
+            angle -= 360
+        return angle
+
+def to_nearest_equivalent_angle(target_deg, current_deg):
+    """
+    将目标角度调整为离当前角度最近的等效角度
+    例如：current=10, target=350 -> 返回 -10 (而不是 350)
+    """
+    diff = target_deg - current_deg
+    # 归一化差值到 [-180, 180]
+    diff =self.normalize_angle_deg(diff)
+    # 返回最近的等效角度
+    return current_deg + diff
 
 # =========================
 # 连接实机 & 初始对齐
@@ -95,9 +112,12 @@ solver = placo.KinematicsSolver(placo_robot)
 solver.dt = CTRL_DT
 solver.mask_fbase(True)
 solver.add_kinetic_energy_regularization_task(1e-6)
+robot_positions=robot.get_joint_positions()
+robot_positions_normalized = np.array([normalize_angle_deg(angle) for angle in robot_positions])
 
 # 从实机读取当前关节 → 同步到 Placo
-_robot_deg_to_placo(robot.get_joint_positions())
+_robot_deg_to_placo(robot_positions_normalized)
+
 placo_robot.update_kinematics()
 
 
@@ -106,5 +126,10 @@ placo_robot.update_kinematics()
 # =========================
 if __name__ == "__main__":  
     while True:
-        _robot_deg_to_placo(robot.get_joint_positions())
+        robot_positions=robot.get_joint_positions()
+        robot_positions_normalized = np.array([normalize_angle_deg(angle) for angle in robot_positions])
+
+        # 从实机读取当前关节 → 同步到 Placo
+        _robot_deg_to_placo(robot_positions_normalized)
+        print(f"postion:{robot_positions_normalized}")
         placo_vis.display(placo_robot.state.q.copy())

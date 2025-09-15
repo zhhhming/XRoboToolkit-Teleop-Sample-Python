@@ -1,18 +1,14 @@
+from xrobotoolkit_teleop.hardware.gen3_robot import KortexRobotController
+import time
 import numpy as np
-def normalize_angle_deg( angle_deg):
-    """将任意角度归一化到 [-180, 180] 范围"""
-    angle = angle_deg % 360
-    if angle > 180:
-        angle -= 360
-    return angle
-def to_nearest_equivalent_angle( target_deg, current_deg):
-    """
-    将目标角度调整为离当前角度最近的等效角度
-    例如：current=10, target=350 -> 返回 -10 (而不是 350)
-    """
-    diff = target_deg - current_deg
-    # 归一化差值到 [-180, 180]
-    diff =normalize_angle_deg(diff)
-        # 返回最近的等效角度
-    return current_deg + diff
-print(to_nearest_equivalent_angle(-179,180))
+robot = KortexRobotController()
+while True:
+    start_time = time.time()
+    speed=np.array([0]*7,dtype=float)
+    speed[0]=0.1
+    robot.send_joint_speeds_position_based(speed)
+    elapsed_time = time.time() - start_time
+    print(f"elapsed_time:{elapsed_time}")
+    sleep_time = (1.0 / 300) - elapsed_time
+    if sleep_time > 0:
+        time.sleep(sleep_time)

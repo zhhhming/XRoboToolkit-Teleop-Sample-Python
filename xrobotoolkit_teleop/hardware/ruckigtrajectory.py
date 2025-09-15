@@ -19,7 +19,7 @@ class RuckigTrajectoryPlanner:
         max_velocity: List[float] = None,
         max_acceleration: List[float] = None,
         max_jerk: List[float] = None,
-        control_cycle: float = 0.001,  # 1ms for low-level control
+        control_cycle: float = 0.003,  # 1ms for low-level control
         waypoint_buffer_size: int = 30,
         velocity_filter_tau: float = 0.05,  # Time constant for velocity filtering
         simulation_mode: bool = False,  # If True, use computed values as feedback
@@ -45,11 +45,11 @@ class RuckigTrajectoryPlanner:
         
         # Set default limits if not provided
         if max_velocity is None:
-            max_velocity = [20.0] * dof  # 50 deg/s default
+            max_velocity = [50.0] * dof  # 50 deg/s default
         if max_acceleration is None:
-            max_acceleration = [50.0] * dof  # 100 deg/s^2 default  
+            max_acceleration = [100.0] * dof  # 100 deg/s^2 default  
         if max_jerk is None:
-            max_jerk = [100.0] * dof  # 500 deg/s^3 default
+            max_jerk = [500.0] * dof  # 500 deg/s^3 default
             
         self.max_velocity = np.array(max_velocity)
         self.max_acceleration = np.array(max_acceleration)
@@ -153,6 +153,7 @@ class RuckigTrajectoryPlanner:
             dt = newest_wp['timestamp'] - oldest_wp['timestamp']
             
             if dt < 0.001:  # Avoid division by very small numbers
+                print("[ESTIMATE]时间间隔太小")
                 return self.filtered_target_velocity
                 
             # Calculate instantaneous velocity
@@ -187,6 +188,7 @@ class RuckigTrajectoryPlanner:
         threshold = 0.2  # deg/s，可以按实际需要调整
         v[np.abs(v) < threshold] = 0.0
         self.filtered_target_velocity = v
+        
         return self.filtered_target_velocity
     
     def update_current_state(
@@ -289,6 +291,8 @@ class RuckigTrajectoryPlanner:
             self.to_nearest_equivalent_angle(target_position[i], self.current_position[i])
             for i in range(self.dof)
         ])
+        print(f"[COMPUTE STEP]adjusted_target:{adjusted_target}")
+        print(f"[COMPUTE STEP]current_position:{current_position}")
         # Set current state for Ruckig
         self.input_param.current_position = self.current_position.tolist()
         self.input_param.current_velocity = self.current_velocity.tolist()
@@ -300,6 +304,7 @@ class RuckigTrajectoryPlanner:
         # Estimate target velocity based on waypoint history for smooth pass-through
         target_velocity = self.estimate_target_velocity()
         self.input_param.target_velocity = target_velocity.tolist()
+        print(f"[COMPUTE]target_velocity:{target_velocity}")
         
         # Target acceleration is typically zero
         self.input_param.target_acceleration = [0.0] * self.dof
@@ -327,6 +332,7 @@ class RuckigTrajectoryPlanner:
                 self.sim_acceleration = new_acceleration.copy()
 
             self.trajectory_steps += 1
+            print(f"[COMPUTER] new velocity:{new_velocity}")
             return new_velocity, new_position, (result == Result.Finished), True
         else:
             # Ruckig 报错：ok=False，上层 fallback

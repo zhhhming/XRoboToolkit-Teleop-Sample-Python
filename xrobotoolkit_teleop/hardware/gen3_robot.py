@@ -306,9 +306,9 @@ class KortexRobotController:
             print("[INFO] Not in LOW_LEVEL, entering...")
             self.enter_low_level_mode()
 
-        if not getattr(self, "in_velocity_mode", False):
-            print("[INFO] Not in VELOCITY mode, switching all actuators to VELOCITY...")
-            self.enter_velocity_control()
+        # if not getattr(self, "in_velocity_mode", False):
+        #     print("[INFO] Not in VELOCITY mode, switching all actuators to VELOCITY...")
+        #     self.enter_velocity_control()
 
         # 2) 检查输入长度
         if len(velocities) != self.actuator_count.count:
@@ -325,7 +325,7 @@ class KortexRobotController:
             v = float(velocities[i])
             if speed_cap is not None:
                 # cap = abs(float(speed_cap))
-                cap = abs(float(20))
+                cap = abs(float(10))
                 v = max(-cap, min(cap, v))
             self.base_command.actuators[i].position = fb.actuators[i].position  # 跟随测量
             self.base_command.actuators[i].velocity = v
@@ -352,7 +352,63 @@ class KortexRobotController:
             except Exception as e:
                 return {"ok": False, "err": f"{e}"}
 
+    def send_joint_speeds_position_based(
+    self,
+    velocities,
+    dt=1.0/300,  # 时间步长，通常是控制周期
+    ):
+        """
+        仿照C++代码的位置控制方法实现速度控制
+        """
+        # 1) 确保LOW_LEVEL模式，但不切换到VELOCITY模式
+        if not getattr(self, "in_low_level_mode", False):
+            print("[INFO] Not in LOW_LEVEL, entering...")
+            self.enter_low_level_mode()
 
+        # 2) 检查输入长度
+        if len(velocities) != self.actuator_count.count:
+            return {"ok": False, "err": f"Expected {self.actuator_count.count} velocities, got {len(velocities)}"}
+
+        # 3) 初始化目标位置缓存（如果还没有）
+        if not hasattr(self, '_target_positions'):
+            fb = self.base_cyclic_client.RefreshFeedback()
+            self._target_positions = [fb.actuators[i].position for i in range(self.actuator_count.count)]
+
+        # 4) 确保命令帧准备好
+        self._ensure_base_command_ready()
+        print(f"velocity:{velocities}")
+        # 5) 根据速度更新目标位置（仿照C++方法）
+        for i in range(self.actuator_count.count):
+            # 根据速度和时间步长计算位置增量
+            velocity_deg_per_sec = float(velocities[i])
+            position_increment = velocity_deg_per_sec * dt
+            
+            # 更新目标位置
+            self._target_positions[i] += position_increment
+            
+            # 归一化到0-360度范围
+            self._target_positions[i] = self._target_positions[i] % 360.0
+            
+            # 设置位置命令
+            self.base_command.actuators[i].position = self._target_positions[i]
+            self.base_command.actuators[i].velocity = 0.0  # 在位置模式下速度设为0
+            self.base_command.actuators[i].flags = 1
+            self.base_command.actuators[i].command_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+            
+            print(f"[DEBUG] 执行器{i}: 目标位置={self._target_positions[i]:.2f}, 速度命令={velocity_deg_per_sec}")
+
+        # 6) 帧号自增
+        self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+        self.base_command.frame_id = self._frame_id
+
+        # 7) 发送命令
+        try:
+            print(f"time:{time.time()}")
+            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+            print(f"完成：{time.time()}")
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "err": f"{e}"}
 
     def set_gripper_position_udp(
         self,
