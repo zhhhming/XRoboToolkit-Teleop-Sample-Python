@@ -306,13 +306,6 @@ class KortexRobotController:
             print("[INFO] Not in LOW_LEVEL, entering...")
             self.enter_low_level_mode()
 
-        # 若不是 VELOCITY，切过去
-        try:
-            # 简单检查一个执行器的模式（可选）
-            pass
-        except:
-            pass
-
         if not getattr(self, "in_velocity_mode", False):
             print("[INFO] Not in VELOCITY mode, switching all actuators to VELOCITY...")
             self.enter_velocity_control()
@@ -600,8 +593,6 @@ class KortexRobotController:
             
             for actuator in feedback.actuators:
                 deg=actuator.position
-                if deg >= 180.0:
-                    deg -= 360.0
                 positions.append(deg)
             
             return np.array(positions)

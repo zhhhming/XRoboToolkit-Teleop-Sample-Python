@@ -96,7 +96,7 @@ class HardwareTeleopController:
         R_headset_world: np.ndarray,
         scale_factor: float,
         visualize_placo: bool,
-        control_rate_hz: int,
+        ik_rate_hz: int,
         enable_log_data: bool,
         log_dir: str,
         log_freq: float,
@@ -110,7 +110,7 @@ class HardwareTeleopController:
         self.R_headset_world = R_headset_world
         self.scale_factor = scale_factor
         self.q_init = q_init
-        self.dt = 1.0 / control_rate_hz
+        self.ik_dt = 1.0 / ik_rate_hz
         if joint_name_to_robot_index == None:
             self.joint_name_to_robot_index = {
                 "joint_1": 0, 
@@ -125,7 +125,7 @@ class HardwareTeleopController:
             self.joint_name_to_robot_index = joint_name_to_robot_index
         
         # Control parameters
-        self.control_rate_hz = control_rate_hz
+        self.ik_rate_hz = ik_rate_hz
         self.visualize_placo = visualize_placo
         
         # Logging setup
@@ -171,7 +171,7 @@ class HardwareTeleopController:
 
         # Ruckig 线程频率与计时 deque（ms）
         from collections import deque
-        self.waypoint_rate_hz = 100.0      # 你可按需改
+        self.waypoint_rate_hz = 500.0      # 你可按需改
         self.control_rate_hz_ll = 300.0   # 低层控制 1 kHz
         self._waypoint_dt = 1.0 / self.waypoint_rate_hz
         self._control_dt_ll = 1.0 / self.control_rate_hz_ll
@@ -215,7 +215,7 @@ class HardwareTeleopController:
             print(f"  {i}: {joint_name}")
 
         self.solver = placo.KinematicsSolver(self.placo_robot)
-        self.solver.dt = self.dt
+        self.solver.dt = self.ik_dt
         self.solver.mask_fbase(True)
         self.solver.add_kinetic_energy_regularization_task(1e-6)
 
@@ -346,6 +346,7 @@ class HardwareTeleopController:
             raise ValueError("robot_deg must have 7 elements.")
         for name, idx in self.joint_name_to_robot_index.items():
             self._write_joint_rad(name, np.radians(float(robot_deg[idx])))
+
     def _initial_robot_pos_deg_cache(self, *, max_retries: int = 8) -> bool:
         """
         Prime the joint-position cache before control threads start.
@@ -392,14 +393,6 @@ class HardwareTeleopController:
             pos = np.zeros(dof, dtype=float)
             used_fallback = True
             print("[WARN] initial cache: fallback to zeros.")
-
-        # 4) Optional clamp to joint limits if provided
-        if hasattr(self, "joint_position_limits"):
-            try:
-                lo, hi = self.joint_position_limits  # expect arrays length==dof
-                pos = np.clip(pos, np.asarray(lo, float), np.asarray(hi, float))
-            except Exception as e:
-                print(f"[WARN] initial cache: joint limits clamp skipped: {e}")
 
         # 5) Publish to cache (thread-safe)
         with self._robot_state_lock:
@@ -506,9 +499,9 @@ class HardwareTeleopController:
 
         # Solve IK
         try:
-            print(f"current_pose:{np.rad2deg(self.placo_robot.state.q.copy()[7:])}")
+            print(f"[IK THREAD]current_pose:{np.rad2deg(self.placo_robot.state.q.copy()[7:])},time:{time.time()}")
             self.solver.solve(True)            
-            print(f"target_pose:{np.rad2deg(self.placo_robot.state.q.copy()[7:])}")
+            print(f"[IK THREAD]target_pose:{np.rad2deg(self.placo_robot.state.q.copy()[7:])},time:{time.time()}")
             self._set_ik_target_deg(self.placo_q_to_robot_deg())
         except RuntimeError as e:
             print(f"IK solver failed: {e}")
@@ -617,7 +610,6 @@ class HardwareTeleopController:
     def _waypoint_thread(self, stop_event: threading.Event):
         """以 waypoint_rate_hz 从 _latest_ik_target 抽样写入 Ruckig waypoints"""
         print(f"Starting Waypoint thread at {self.waypoint_rate_hz}Hz...")
-        last_target = None
         status_print_interval = 2.0
         last_status_time = time.time()
 
@@ -625,12 +617,10 @@ class HardwareTeleopController:
             loop_start = time.time()
             try:
                 with self._target_position_lock:
-                    new_target = None if self._latest_ik_target is None else self._latest_ik_target.copy()#不会去清理self._latest_ik_target
-                    # 读后不清空，允许丢多次（由去重/阈值控制）
+                    new_target = None if self._latest_ik_target is None else self._latest_ik_target.copy()
                 if new_target is not None:
-                    if last_target is None or np.linalg.norm(new_target - last_target) > 0.05:
                         self.ruckig_planner.add_waypoint(new_target)
-                        last_target = new_target
+                        print(f"[WAYPOINT THREAD]new_target:{new_target},time:{time.time()}")
 
                 # 周期状态打印（可选）
                 now = time.time()
@@ -672,7 +662,7 @@ class HardwareTeleopController:
             
             # Maintain loop rate
             elapsed_time = time.time() - start_time
-            sleep_time = (1.0 / self.control_rate_hz) - elapsed_time
+            sleep_time = (1.0 / self.ik_rate_hz) - elapsed_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
         
@@ -696,10 +686,50 @@ class HardwareTeleopController:
                 else:
                     current_pos_deg = self.robot_controller.get_joint_positions()
                     current_speed = self.robot_controller.get_joint_speeds()
-                    if len(current_pos_deg) < 7:
-                        # 读失败则维持频率
-                        time.sleep(self._control_dt_ll)
-                        continue
+                    if (current_pos_deg is None) or (len(current_pos_deg) < 7):
+                        global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
+
+                        # 1) 优先用硬件返回的当前速度（若可用）
+                        if isinstance(current_speed, (list, np.ndarray)) and len(current_speed) == 7:
+                            v_cmd = np.array(current_speed, dtype=float) * 0.95
+                        else:
+                            # 2) 兜底：用规划器内部记录的当前速度（或过滤后的目标速度）
+                            try:
+                                v_cmd = np.array(self.ruckig_planner.current_velocity, dtype=float)
+                                if v_cmd.shape[0] != 7:
+                                    raise ValueError("planner current_velocity shape mismatch")
+                            except Exception:
+                                v_cmd = np.array(self.ruckig_planner.filtered_target_velocity, dtype=float)
+
+                            v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0) * 0.90
+
+                        # 数值安全 + 限幅
+                        v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0)
+                        v_cmd = np.clip(v_cmd, -global_cap, global_cap)
+
+                        # 发送兜底速度
+                        try:
+                            ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
+                            if not ret.get("ok", False):
+                                # 再次兜底：上一拍成功的命令（若有），进一步衰减再发一次
+                                v_hold = getattr(self, "_last_v_cmd", v_cmd) * 0.8
+                                self.robot_controller.send_joint_speeds_udp(v_hold, speed_cap=global_cap)
+                        except Exception as e:
+                            print(f"[WARN] fallback velocity send failed: {e}")
+
+                        # 记录上一次成功发送的命令，便于下一次兜底
+                        try:
+                            self._last_v_cmd = v_cmd.copy()
+                        except Exception:
+                            pass
+
+                        # 维持循环频率
+                        elapsed = time.time() - loop_start
+                        self.control_loop_times.append(elapsed)
+                        sleep_time = self._control_dt_ll - elapsed
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
+                        continue  # 本周期不再做Ruckig解算，直接进入下一拍
                     current_pos_deg = np.array(current_pos_deg, dtype=float)
 
                 # 2) 把最新硬件位置写入缓存，供 IK 线程使用
@@ -712,34 +742,37 @@ class HardwareTeleopController:
                 )
                 if not ok:
                     # Ruckig 本周期解算失败 → fallback：维持当前速度，不要猛置 0
-                    v_cmd = current_speed.copy()
-                    print("[WARN] Ruckig step failed; falling back to current_speed")
+                    v_cmd = np.array(current_speed, dtype=float) if isinstance(current_speed, (list, np.ndarray)) and len(current_speed)==7 else getattr(self, "_last_v_cmd", np.zeros(7))
+                    v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0) * 0.95
+                    vmax = self.ruckig_planner.max_velocity
+                    v_cmd = np.clip(v_cmd, -vmax, vmax)
+                    print("[CONTROL THREAD] ruckig解算失败")
                 else:
                     v_cmd = np.nan_to_num(target_vel_deg_s, nan=0.0, posinf=0.0, neginf=0.0)
                     # 轻微缩边，避免精度贴边
                     vmax = self.ruckig_planner.max_velocity
                     v_cmd = np.clip(v_cmd, -0.999 * vmax, 0.999 * vmax)
-                    print(f"vcmd:{v_cmd}")
+                    print(f"[CONTROL THREAD get ]vcmd:{v_cmd}")
                 # 4) 直接**发速度**UDP（优先尝试 set_joint_speeds_udp）
                 global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
                 if not self._simulation_mode:
-                    ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
-                    print("send-------------------------------------------------------------")
-                    if not ret.get("ok", False):
-                        print(f"[WARN] send_joint_speeds_udp failed: {ret.get('err')}")
-                        self.robot_controller.send_joint_speeds_udp(current_speed, speed_cap=global_cap)
-                
+                    ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)                    
+                if (not ret) or (not ret.get("ok", False)):
+                    v_hold = np.nan_to_num(getattr(self, "_last_v_cmd", v_cmd), nan=0.0, posinf=0.0, neginf=0.0) * 0.9
+                    self.robot_controller.send_joint_speeds_udp(v_hold, speed_cap=float(np.max(np.abs(vmax))))
+                else:
+                    self._last_v_cmd = v_cmd.copy()   # 仅成功时记录
+                    print("[CONTROL THREAD]速度发送成功！！！！！！")
 
                 # 周期状态打印
                 now = time.time()
                 if now - last_status_time > status_print_interval:
                     status = self.ruckig_planner.get_status()
                     avg_ctrl = (np.mean(self.control_loop_times) * 1000) if self.control_loop_times else 0.0
-                    avg_wp = (np.mean(self.waypoint_loop_times) * 1000) if self.waypoint_loop_times else 0.0
                     print(f"[CTRL] vel={status['current_velocity_norm']:.1f}°/s "
                         f"tgtVel={status['filtered_target_velocity_norm']:.1f}°/s "
                         f"steps={status['trajectory_steps']} "
-                        f"loop={avg_ctrl:.1f}ms wp_loop={avg_wp:.1f}ms")
+                        f"loop={avg_ctrl:.1f}ms")
                     last_status_time = now
 
             except Exception as e:
@@ -899,7 +932,7 @@ if __name__ == "__main__":
             R_headset_world=R_headset_world,
             scale_factor=1.0,
             visualize_placo=True,
-            control_rate_hz=200,
+            ik_rate_hz=500,
             enable_log_data=False,
             log_dir="teleop_logs",
             log_freq=50.0,
@@ -911,3 +944,4 @@ if __name__ == "__main__":
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
+#要看那个实体角度0-360和placo-180-180的影响

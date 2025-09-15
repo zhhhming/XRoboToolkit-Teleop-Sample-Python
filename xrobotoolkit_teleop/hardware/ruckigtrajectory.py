@@ -45,7 +45,7 @@ class RuckigTrajectoryPlanner:
         
         # Set default limits if not provided
         if max_velocity is None:
-            max_velocity = [10.0] * dof  # 50 deg/s default
+            max_velocity = [20.0] * dof  # 50 deg/s default
         if max_acceleration is None:
             max_acceleration = [50.0] * dof  # 100 deg/s^2 default  
         if max_jerk is None:
@@ -132,7 +132,7 @@ class RuckigTrajectoryPlanner:
             # Always return the newest waypoint for best tracking
             return self.waypoint_queue[-1]['position']
     
-    def estimate_target_velocity(self) -> np.ndarray:
+    def estimate_target_velocity(self) -> np.ndarray:#waypoint线程要快一点，500吧
         """
         Estimate target velocity based on waypoint history.
         Uses the trajectory of recent waypoints to predict desired velocity.
@@ -169,7 +169,7 @@ class RuckigTrajectoryPlanner:
         # Apply exponential moving average filter
         # v_filtered(k) = (1-β)*v_filtered(k-1) + β*v_inst(k)
         # β = 1 - exp(-Δt/τ)
-        beta = 1.0 - 0.9
+        beta = 0.9
         self.filtered_target_velocity = (
             (1 - beta) * self.filtered_target_velocity + 
              beta * inst_velocity
@@ -181,7 +181,7 @@ class RuckigTrajectoryPlanner:
         v[near_mask] = 0.0
         # Clamp to velocity limits
         v = np.clip(v, -0.5 * self.max_velocity, 0.5 * self.max_velocity)
-        threshold = 0.5  # deg/s，可以按实际需要调整
+        threshold = 0.2  # deg/s，可以按实际需要调整
         v[np.abs(v) < threshold] = 0.0
         self.filtered_target_velocity = v
         return self.filtered_target_velocity
