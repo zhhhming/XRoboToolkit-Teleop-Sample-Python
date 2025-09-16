@@ -721,6 +721,7 @@ class HardwareTeleopController:
                 else:
                     current_pos_deg = self.robot_controller.get_joint_positions()
                     current_speed = self.robot_controller.get_joint_speeds()
+                    print(f"[CONTROL THREAD]current_speed:{current_speed}")
                     if (current_pos_deg is None) or (len(current_pos_deg) < 7):
                         global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
 

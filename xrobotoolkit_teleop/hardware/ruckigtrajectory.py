@@ -45,11 +45,11 @@ class RuckigTrajectoryPlanner:
         
         # Set default limits if not provided
         if max_velocity is None:
-            max_velocity = [50.0] * dof  # 50 deg/s default
+            max_velocity = [10.0] * dof  # 50 deg/s default
         if max_acceleration is None:
-            max_acceleration = [100.0] * dof  # 100 deg/s^2 default  
+            max_acceleration = [50000.0] * dof  # 100 deg/s^2 default  
         if max_jerk is None:
-            max_jerk = [500.0] * dof  # 500 deg/s^3 default
+            max_jerk = [1000000.0] * dof  # 500 deg/s^3 default
             
         self.max_velocity = np.array(max_velocity)
         self.max_acceleration = np.array(max_acceleration)
@@ -143,7 +143,7 @@ class RuckigTrajectoryPlanner:
                 return np.zeros(self.dof)
             
             # Use a window of recent waypoints (e.g., last 10-20)
-            window_size = min(20, len(self.waypoint_queue))
+            window_size = min(5, len(self.waypoint_queue))
             
             # Get first and last waypoints in window
             oldest_wp = self.waypoint_queue[-window_size]
@@ -165,7 +165,7 @@ class RuckigTrajectoryPlanner:
             ])
             desired_dir = adjusted_target - cur_pos
             # 小距离死区：距离很小时（例如 < 0.5°）认为不需要速度
-            dist_deadband = 0.5
+            dist_deadband = 0.1
             near_mask = np.abs(desired_dir) < dist_deadband
             desired_dir_sign = np.sign(desired_dir)  # -1, 0, +1
         inst_velocity = np.asarray(inst_velocity, dtype=float)
@@ -173,7 +173,7 @@ class RuckigTrajectoryPlanner:
         # Apply exponential moving average filter
         # v_filtered(k) = (1-β)*v_filtered(k-1) + β*v_inst(k)
         # β = 1 - exp(-Δt/τ)
-        beta = 0.9
+        beta = 0.3
         self.filtered_target_velocity = (
             (1 - beta) * self.filtered_target_velocity + 
              beta * inst_velocity
@@ -184,12 +184,17 @@ class RuckigTrajectoryPlanner:
         v[sign_mismatch] = 0.0
         v[near_mask] = 0.0
         # Clamp to velocity limits
-        v = np.clip(v, -0.5 * self.max_velocity, 0.5 * self.max_velocity)
-        threshold = 0.2  # deg/s，可以按实际需要调整
+        v = np.clip(v, -self.max_velocity, self.max_velocity)
+        threshold = 0.05  # deg/s，可以按实际需要调整
         v[np.abs(v) < threshold] = 0.0
         self.filtered_target_velocity = v
+        print(f"[VELOCITY DEBUG] position_error: {np.max(np.abs(desired_dir)):.3f}°")
+        print(f"[VELOCITY DEBUG] inst_velocity: {np.max(np.abs(inst_velocity)):.3f}°/s") 
+        print(f"[VELOCITY DEBUG] filtered_velocity: {np.max(np.abs(v)):.3f}°/s")
+    
         
-        return self.filtered_target_velocity
+        # return self.filtered_target_velocity
+        return np.array([0.0]*7,dtype=float)
     
     def update_current_state(
         self,

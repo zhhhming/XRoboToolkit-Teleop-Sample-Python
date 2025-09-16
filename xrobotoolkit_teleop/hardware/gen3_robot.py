@@ -409,6 +409,66 @@ class KortexRobotController:
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "err": f"{e}"}
+    def send_joint_positions_udp(
+    self,
+    positions,
+    *,
+    position_tolerance: float = 0.1,  # 位置容差，度
+    ):
+        """
+        使用 BaseCyclic (UDP) 在 LOW_LEVEL 模式下发送关节位置指令（单位：度）
+        
+        Args:
+            positions: 长度 = 执行器数量 的数组（度）
+            position_tolerance: 位置容差
+        """
+        # 1) 确保处于低层模式，但不切换到VELOCITY模式
+        if not getattr(self, "in_low_level_mode", False):
+            print("[INFO] Not in LOW_LEVEL, entering...")
+            self.enter_low_level_mode()
+
+        # 2) 检查输入长度
+        if len(positions) != self.actuator_count.count:
+            return {"ok": False, "err": f"Expected {self.actuator_count.count} positions, got {len(positions)}"}
+
+        # 3) 确保命令帧准备好
+        self._ensure_base_command_ready()
+
+        # 4) 刷新一次反馈
+        fb = self.base_cyclic_client.RefreshFeedback()
+
+        # 5) 写入每个关节的位置（类似C++代码）
+        for i in range(self.actuator_count.count):
+            target_pos = float(positions[i])
+            print(f"target_pos:{target_pos}")
+            # 归一化到0-360度范围（仿照C++的fmod操作）
+            target_pos = target_pos % 360.0
+            
+            # 设置位置命令
+            self.base_command.actuators[i].position = target_pos
+            self.base_command.actuators[i].velocity = 0.0  # 在位置模式下速度设为0
+            self.base_command.actuators[i].flags = 1
+            self.base_command.actuators[i].command_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+
+        # 6) 帧号自增（16位回绕）
+        self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+        self.base_command.frame_id = self._frame_id
+        
+        # 7) 发送命令
+        MAX_RETRIES = 3
+        for attempt in range(MAX_RETRIES):
+            try:
+                self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+                return {"ok": True}
+            except KServerException as e:
+                if attempt < MAX_RETRIES - 1:
+                    print(f"[WARN] Position command attempt {attempt+1} failed, retrying: {e}")
+                    time.sleep(0.001)
+                    continue
+                else:
+                    return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
+            except Exception as e:
+                return {"ok": False, "err": f"{e}"}
 
     def set_gripper_position_udp(
         self,
