@@ -5,10 +5,8 @@ robot = KortexRobotController()
 while True:
     start_time = time.time()
     speed=np.array([0]*7,dtype=float)
-    speed[0]=1
-    speed[1]=1
-    speed[2]=1
-    speed[3]=1
+    speed[2]=10
+
     robot.send_joint_speeds_position_based(speed)
     elapsed_time = time.time() - start_time
     print(f"elapsed_time:{elapsed_time}")

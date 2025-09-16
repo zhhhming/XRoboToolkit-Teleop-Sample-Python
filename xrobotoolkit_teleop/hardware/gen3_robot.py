@@ -475,67 +475,106 @@ class KortexRobotController:
         position,
         *,
         kp: float = 2.0,            # 比例增益：%/s per %
-        vel_cap_pct: float = 20.0, # 速度上限（百分比）
-        tol_pct: float = 1.5,       # 到位阈值（百分比）
-        force_pct: float | None = None
-    ):
+        vel_cap_pct: float = 30.0,  # 速度上限（百分比）
+        tol_pct: float = 1.5,        # 到位阈值（百分比）
+        force_pct: float = 5.0,      # 夹持力（默认5%）
+        velocity_blend_alpha: float = 0.7  # 速度混合系数
+        ):
         """
-        使用UDP BaseCyclic设置gripper位置 (低级控制模式)
+        使用UDP BaseCyclic设置gripper位置 (低级控制模式) - 带速度平滑
         
         Args:
-            position: gripper position (0.0 to 1.0 or actual position value)
+            position: gripper position (0.0 to 1.0)
+            kp: 比例增益
+            vel_cap_pct: 速度上限
+            tol_pct: 位置容差
+            force_pct: 夹持力百分比
+            velocity_blend_alpha: 速度混合系数 (0-1, 越大越接近期望速度)
         """
         if not hasattr(self, 'in_low_level_mode') or not self.in_low_level_mode:
             print("Warning: Not in low-level mode. Entering low-level mode...")
             self.enter_low_level_mode()
+        
+        # 确保夹爪命令结构存在
         grip_cmd = self.base_command.interconnect.gripper_command
         if len(grip_cmd.motor_cmd) == 0:
             m = grip_cmd.motor_cmd.add()
         else:
             m = grip_cmd.motor_cmd[0]
-
-        def to_percent(x):
-            x = float(x)
-            open_pos = getattr(self, 'gripper_open_pos', None)
-            close_pos = getattr(self, 'gripper_close_pos', None)
-            if open_pos is not None and close_pos is not None and abs(open_pos - close_pos) > 1e-6:
-                lo, hi = (open_pos, close_pos) if open_pos < close_pos else (close_pos, open_pos)
-                alpha = (x - lo) / (hi - lo)
-                return max(0.0, min(100.0, alpha * 100.0))
-            if 0.0 <= x <= 1.2:
-                return max(0.0, min(100.0, x * 100.0))
-            return max(0.0, min(100.0, x))
         
-        def fb_to_percent(v):
-            v = float(v)
-            return v * 100.0 if 0.0 <= v <= 1.2 else v
         try:
-            tgt_pct = to_percent(position)
+            # 1. 获取当前反馈
             fb = self.base_cyclic_client.RefreshFeedback()
-            cur_raw = fb.interconnect.gripper_feedback.motor[0].position if len(fb.interconnect.gripper_feedback.motor) > 0 else 0.0
-            cur_pct = fb_to_percent(cur_raw)#反馈的夹爪位置0到1,转成百分比
-            err = tgt_pct - cur_pct
-            reached = (abs(err) <= tol_pct)
-            m.position = float(tgt_pct)
-            if hasattr(m, 'velocity'):
-                v = min(vel_cap_pct, max(0.0, kp * abs(err)))
-                m.velocity = float(v if not reached else 0.0)
-            if hasattr(m, 'force'):
-                f = force_pct if force_pct is not None else getattr(self, 'gripper_force', 100.0)
-                m.force = float(max(0.0, min(100.0, f)))
-
-            # 4) 帧号递增 + 刷新一帧
+            
+            # 获取当前位置和速度
+            if len(fb.interconnect.gripper_feedback.motor) > 0:
+                current_pos_raw = fb.interconnect.gripper_feedback.motor[0].position
+                current_velocity_raw = fb.interconnect.gripper_feedback.motor[0].velocity  # 直接从反馈获取速度
+            else:
+                current_pos_raw = 0.0
+                current_velocity_raw = 0.0
+            
+            # 2. 转换位置到百分比 (参考示例代码，0%=全开，100%=全闭)
+            # 注意：position参数是0-1范围，需要转换为0-100%
+            target_pct = max(0.0, min(100.0, position * 100.0))
+            current_pct = current_pos_raw  # BaseCyclic反馈已经是百分比
+            print(f"[GRIPPER THREAD]current_pos:{current_pos_raw}")
+            # 3. 计算位置误差
+            position_error = target_pct - current_pct
+            reached = (abs(position_error) <= tol_pct)
+            
+            # 4. 计算期望速度（基于误差的比例控制）
+            if reached:
+                desired_velocity = 0.0
+            else:
+                desired_velocity = kp * abs(position_error)
+                desired_velocity = min(vel_cap_pct, desired_velocity)
+            
+            # 5. 速度混合：避免突变
+            # 使用反馈的当前速度
+            current_velocity = abs(current_velocity_raw)  # 使用绝对值，因为方向由位置误差决定
+            
+            # 当误差大时更多使用当前速度，误差小时更多使用期望速度
+            error_normalized = min(abs(position_error) / 20.0, 1.0)  # 归一化误差到0-1
+            dynamic_alpha = velocity_blend_alpha * (1.0 - error_normalized * 0.3)  # 误差大时减小alpha
+            
+            # 混合速度
+            blended_velocity = (1 - dynamic_alpha) * current_velocity + dynamic_alpha * desired_velocity
+            
+            # 限制速度上限
+            blended_velocity = min(blended_velocity, vel_cap_pct)
+            
+            # 6. 设置夹爪命令（参考示例代码的方式）
+            m.position = float(target_pct)  # 目标位置
+            m.velocity = float(blended_velocity)  # 混合后的速度
+            m.force = float(force_pct)  # 夹持力
+            
+            # 7. 发送命令
             self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
             self.base_command.frame_id = self._frame_id
+            
+            # 更新所有执行器的command_id（保持同步）
+            for i in range(len(self.base_command.actuators)):
+                self.base_command.actuators[i].command_id = self._frame_id
+            
+            # 更新夹爪的command_id
+            self.base_command.interconnect.gripper_command.command_id.identifier = self._frame_id
+            
+            # 发送命令
             self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
-
-            return {"ok": True, "reached": reached, "err_pct": float(err)}
-
+            
+            return {
+                "ok": True, 
+                "reached": reached, 
+                "err_pct": float(position_error),
+                "velocity": float(blended_velocity),
+                "current_velocity": float(current_velocity)
+            }
             
         except Exception as e:
             print(f"ERROR setting gripper position via UDP: {e}")
-            return {"ok": False, "reached": False, "err_pct": None}
-
+            return {"ok": False, "reached": False, "err_pct": None, "velocity": 0.0}
+        
     def _check_for_end_or_abort(self, event):
         """Callback function to check for action completion"""
         def check(notification, e=event):
@@ -940,7 +979,7 @@ if __name__ == "__main__":
         time.sleep(2)
         gripper_pos = robot.get_gripper_position()
         print(f"Gripper position: {gripper_pos}")
-        
+        5.
         # Test single joint movement
         print("Testing single joint movement...")
         robot.set_single_joint_position(0, 10.0)  # Move first joint 10 degrees
