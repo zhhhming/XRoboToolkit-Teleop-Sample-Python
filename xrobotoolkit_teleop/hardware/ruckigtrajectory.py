@@ -23,6 +23,10 @@ class RuckigTrajectoryPlanner:
         waypoint_buffer_size: int = 30,
         velocity_filter_tau: float = 0.05,  # Time constant for velocity filtering
         simulation_mode: bool = False,  # If True, use computed values as feedback
+        enable_waypoint_filter: bool = True,
+        waypoint_filter_alpha: float = 0.15,  # 滤波强度 (0-1), 越小越平滑
+        waypoint_filter_cutoff_hz: float = None,  # 可选：用截止频率计算alpha
+        waypoint_filter_deadband: float = 0.01,  # 死区：变化太小时不更新滤波器
     ):
         """
         Initialize the Ruckig trajectory planner.
@@ -42,7 +46,26 @@ class RuckigTrajectoryPlanner:
         self.waypoint_buffer_size = waypoint_buffer_size
         self.velocity_filter_tau = velocity_filter_tau
         self.simulation_mode = simulation_mode
+
+         # 低通滤波器配置
+        self.enable_waypoint_filter = enable_waypoint_filter
+        self.waypoint_filter_deadband = waypoint_filter_deadband
+
+        # 计算滤波系数
+        if waypoint_filter_cutoff_hz is not None:
+            # 从截止频率计算alpha: α = 1 - exp(-2π * fc * dt)
+            dt_filter = 1.0 / 1000.0  # 假设1kHz调用频率
+            self.waypoint_filter_alpha = 1.0 - np.exp(-2.0 * np.pi * waypoint_filter_cutoff_hz * dt_filter)
+            self.waypoint_filter_alpha = np.clip(self.waypoint_filter_alpha, 0.01, 0.99)
+        else:
+            self.waypoint_filter_alpha = waypoint_filter_alpha
         
+         # 低通滤波器状态变量
+        self.filtered_waypoint = None  # 当前滤波输出
+        self.last_raw_waypoint = None  # 上一次原始输入
+        self.waypoint_filter_initialized = False
+        self.waypoint_filter_lock = threading.Lock()
+
         # Set default limits if not provided
         if max_velocity is None:
             max_velocity = [50.0] * dof  # 50 deg/s default
@@ -90,7 +113,125 @@ class RuckigTrajectoryPlanner:
         # Statistics
         self.waypoints_enqueued = 0
         self.trajectory_steps = 0
+
+    def normalize_angle_deg(self, angle_deg):
+        """将任意角度归一化到 [-180, 180] 范围"""
+        angle = angle_deg % 360
+        if angle > 180:
+            angle -= 360
+        return angle
+
+    def to_nearest_equivalent_angle(self, target_deg, current_deg):
+        """
+        将目标角度调整为离当前角度最近的等效角度
+        例如：current=10, target=350 -> 返回 -10 (而不是 350)
+        """
+        diff = target_deg - current_deg
+        # 归一化差值到 [-180, 180]
+        diff = self.normalize_angle_deg(diff)
+        # 返回最近的等效角度
+        return current_deg + diff
+    
+    def _apply_waypoint_filter(self, raw_waypoint: np.ndarray) -> np.ndarray:
+        """
+        对原始waypoint应用低通滤波
         
+        Args:
+            raw_waypoint: 原始目标位置
+            
+        Returns:
+            filtered_waypoint: 滤波后的目标位置
+        """
+        if not self.enable_waypoint_filter:
+            return raw_waypoint.copy()
+            
+        with self.waypoint_filter_lock:
+            # 首次初始化
+            if not self.waypoint_filter_initialized:
+                self.filtered_waypoint = raw_waypoint.copy()
+                self.last_raw_waypoint = raw_waypoint.copy()
+                self.waypoint_filter_initialized = True
+                print(f"[WAYPOINT_FILTER] Initialized with: {self.filtered_waypoint}")
+                return self.filtered_waypoint.copy()
+            
+            # 计算变化量（考虑角度连续性）
+            if self.filtered_waypoint is not None:
+                adjusted_target = np.array([
+                    self.to_nearest_equivalent_angle(raw_waypoint[i], self.filtered_waypoint[i])
+                    for i in range(self.dof)
+                ])
+            else:
+                adjusted_target = raw_waypoint.copy()
+            
+            # 计算变化量
+            change = adjusted_target - self.filtered_waypoint
+            max_change = np.max(np.abs(change))
+            
+            # 死区处理：变化太小时不更新
+            if max_change < self.waypoint_filter_deadband:
+                return self.filtered_waypoint.copy()
+            
+            # 应用指数移动平均滤波
+            # filtered = (1-α) * filtered_old + α * raw
+            alpha = self.waypoint_filter_alpha
+            self.filtered_waypoint = (1.0 - alpha) * self.filtered_waypoint + alpha * adjusted_target
+            
+            # 记录输入
+            self.last_raw_waypoint = raw_waypoint.copy()
+            
+            return self.filtered_waypoint.copy()
+    
+    def set_waypoint_filter_params(
+        self, 
+        alpha: Optional[float] = None,
+        cutoff_hz: Optional[float] = None,
+        deadband: Optional[float] = None,
+        enabled: Optional[bool] = None
+    ):
+        """
+        动态调整滤波器参数
+        
+        Args:
+            alpha: 滤波系数
+            cutoff_hz: 截止频率 (Hz)
+            deadband: 死区阈值
+            enabled: 是否启用滤波
+        """
+        with self.waypoint_filter_lock:
+            if enabled is not None:
+                self.enable_waypoint_filter = enabled
+                
+            if deadband is not None:
+                self.waypoint_filter_deadband = deadband
+                
+            if cutoff_hz is not None:
+                dt_filter = 1.0 / 1000.0  # 1kHz
+                self.waypoint_filter_alpha = 1.0 - np.exp(-2.0 * np.pi * cutoff_hz * dt_filter)
+                self.waypoint_filter_alpha = np.clip(self.waypoint_filter_alpha, 0.01, 0.99)
+                print(f"[WAYPOINT_FILTER] Set cutoff to {cutoff_hz}Hz, alpha={self.waypoint_filter_alpha:.3f}")
+            elif alpha is not None:
+                self.waypoint_filter_alpha = np.clip(alpha, 0.01, 0.99)
+                print(f"[WAYPOINT_FILTER] Set alpha to {self.waypoint_filter_alpha:.3f}")
+
+    def reset_waypoint_filter(self, initial_position: Optional[np.ndarray] = None):
+        """
+        重置滤波器状态
+        
+        Args:
+            initial_position: 初始位置，如果为None则使用当前filtered_waypoint
+        """
+        with self.waypoint_filter_lock:
+            if initial_position is not None:
+                self.filtered_waypoint = initial_position.copy()
+                self.last_raw_waypoint = initial_position.copy()
+                self.waypoint_filter_initialized = True
+                print(f"[WAYPOINT_FILTER] Reset to position: {initial_position}")
+            else:
+                self.waypoint_filter_initialized = False
+                self.filtered_waypoint = None
+                self.last_raw_waypoint = None
+                print("[WAYPOINT_FILTER] Reset to uninitialized state")
+
     def update_constraints(
         self,
         max_velocity: Optional[List[float]] = None,
@@ -125,12 +266,22 @@ class RuckigTrajectoryPlanner:
             self.waypoints_enqueued += 1
     
     def get_latest_waypoint(self) -> Optional[np.ndarray]:
-        """Get the most recent waypoint from the queue."""
+        """
+        Get the most recent waypoint from the queue with optional low-pass filtering.
+        
+        Returns:
+            Filtered target position, or None if no waypoints available
+        """
         with self.waypoint_lock:
             if not self.waypoint_queue:
                 return None
-            # Always return the newest waypoint for best tracking
-            return self.waypoint_queue[-1]['position']
+            # Get the newest raw waypoint
+            raw_waypoint = self.waypoint_queue[-1]['position']
+        
+        # Apply low-pass filter
+        filtered_waypoint = self._apply_waypoint_filter(raw_waypoint)
+        
+        return filtered_waypoint
     
     def estimate_target_velocity(self) -> np.ndarray:#waypoint线程要快一点，500吧
         """

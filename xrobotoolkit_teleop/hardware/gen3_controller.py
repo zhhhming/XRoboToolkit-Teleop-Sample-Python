@@ -204,7 +204,14 @@ class HardwareTeleopController:
         # Initialize robot controller
         if not self._simulation_mode:
             self.robot_controller = KortexRobotController() 
-        self.ruckig_planner = RuckigTrajectoryPlanner(control_cycle=self.control_second)
+        self.ruckig_planner = RuckigTrajectoryPlanner(
+            control_cycle=self.control_second,
+            # 新增滤波参数
+            enable_waypoint_filter=True,           # 启用滤波
+            waypoint_filter_alpha=0.1,             # 滤波强度 (0.05-0.2 范围比较好)
+            waypoint_filter_cutoff_hz=None,        # 也可以用截止频率: 比如 5.0 Hz
+            waypoint_filter_deadband=0.02,         # 死区：小于0.05度的变化不处理
+        )
         if self._simulation_mode:
             self.ruckig_planner.set_simulation_mode(self._simulation_mode,[109, -15+360, 179, 131, -179+360, 53, 8])
        

@@ -440,7 +440,7 @@ class KortexRobotController:
         # 5) 写入每个关节的位置（类似C++代码）
         for i in range(self.actuator_count.count):
             target_pos = float(positions[i])
-            print(f"target_pos:{target_pos}")
+            # print(f"target_pos{i}:{target_pos}")
             # 归一化到0-360度范围（仿照C++的fmod操作）
             target_pos = target_pos % 360.0
             
