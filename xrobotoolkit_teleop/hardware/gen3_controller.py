@@ -177,6 +177,7 @@ class HardwareTeleopController:
         self._control_dt_ll = 1.0 / self.control_rate_hz_ll
         self.control_loop_times = deque(maxlen=100)
         self.waypoint_loop_times = deque(maxlen=100)
+        self.ik_loop_times = deque(maxlen=100)
         self.control_second = 1/self.control_rate_hz_ll
             # 添加夹爪控制的线程锁
         self._gripper_target_lock = threading.Lock()
@@ -489,9 +490,9 @@ class HardwareTeleopController:
             [ 0,  0,  1]
         ])
         R_z_90_cw = np.array([
-        [ 0,  1,  0],
-        [-1,  0,  0],
-        [ 0,  0,  1]
+            [ 0,  1,  0],
+            [-1,  0,  0],
+            [ 0,  0,  1]
         ])
         
         # 对位移delta应用旋转
@@ -584,16 +585,11 @@ class HardwareTeleopController:
                 
                 # Calculate gripper position based on trigger value
                 open_pos = 0.01
-                close_pos = 0.99
-                
-                if open_pos is not None and close_pos is not None:
-                    gripper_pos = calc_parallel_gripper_position(open_pos, close_pos, trigger_value)
-                    with self._gripper_target_lock:
-                        self._gripper_targets[gripper_name] = gripper_pos
-                else:
-                    # Fallback to basic mapping
-                    with self._gripper_target_lock:
-                        self._gripper_targets[gripper_name] = trigger_value
+                close_pos = 0.99              
+                gripper_pos = calc_parallel_gripper_position(open_pos, close_pos, trigger_value)
+                with self._gripper_target_lock:
+                    self._gripper_targets[gripper_name] = gripper_pos
+
             else:
                 raise ValueError(f"Unsupported gripper type: {gripper_type}")
 
@@ -685,17 +681,15 @@ class HardwareTeleopController:
             try:
                 with self._target_position_lock:
                     new_target = None if self._latest_ik_target is None else self._latest_ik_target.copy()
-                if new_target is not None:
-                        self.ruckig_planner.add_waypoint(new_target)
-                        # print(f"[WAYPOINT THREAD]new_target:{new_target},time:{time.time()}")
+                    if new_target is not None:
+                            self.ruckig_planner.add_waypoint(new_target)
 
-                # 周期状态打印（可选）
                 now = time.time()
                 if now - last_status_time > status_print_interval:
                     status = self.ruckig_planner.get_status()
                     avg_wp = (np.mean(self.waypoint_loop_times) * 1000) if self.waypoint_loop_times else 0.0
                     print(f"[WP] queued={status['num_waypoints']} processed={status['waypoints_processed']} "
-                        f"sim={status['simulation_mode']} loop={avg_wp:.1f}ms")
+                        f"loop={avg_wp:.1f}ms")
                     last_status_time = now
 
             except Exception as e:
@@ -712,7 +706,8 @@ class HardwareTeleopController:
     def _ik_thread(self, stop_event: threading.Event):
         """Dedicated thread for IK computation"""
         print("Starting IK thread...")
-        
+        status_print_interval = 2.0
+        last_status_time = time.time()
         while not stop_event.is_set():
             start_time = time.time()
             
@@ -723,12 +718,18 @@ class HardwareTeleopController:
                 self._update_robot_state()
                 if self.visualize_placo:
                     self._update_placo_viz()
+                now = time.time()
+                if now - last_status_time > status_print_interval:
+                    avg_wp = (np.mean(self.ik_loop_times) * 1000) if self.ik_loop_times else 0.0
+                    print(f"[WAYPOINT THREAD] loop={avg_wp:.1f}ms")
+                    last_status_time = now
                     
             except Exception as e:
                 print(f"Error in IK thread: {e}")
             
             # Maintain loop rate
             elapsed_time = time.time() - start_time
+            self.ik_loop_times.append(elapsed_time)
             sleep_time = (1.0 / self.ik_rate_hz) - elapsed_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
@@ -951,12 +952,6 @@ class HardwareTeleopController:
                         self.to_nearest_equivalent_angle(target_positions[i], current_pos_deg[i])
                         for i in range(len(target_positions))
                     ])
-                    self._dbg_append(
-                        t=time.time() - self._start_time,
-                        target_pos=adjusted_target,
-                        curr_pos=current_pos_deg,
-                        curr_vel=np.array(current_speed, dtype=float) if current_speed is not None else np.zeros(7)
-                    )
                     # print(f"[CONTROL THREAD] current_pos: {current_pos_deg}")
                     # print(f"[CONTROL THREAD] raw_target: {target_positions}")
                     # print(f"[CONTROL THREAD] adjusted_target: {adjusted_target}")
