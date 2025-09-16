@@ -45,11 +45,11 @@ class RuckigTrajectoryPlanner:
         
         # Set default limits if not provided
         if max_velocity is None:
-            max_velocity = [10.0] * dof  # 50 deg/s default
+            max_velocity = [30.0] * dof  # 50 deg/s default
         if max_acceleration is None:
-            max_acceleration = [50000.0] * dof  # 100 deg/s^2 default  
+            max_acceleration = [600.0] * dof  # 100 deg/s^2 default  
         if max_jerk is None:
-            max_jerk = [1000000.0] * dof  # 500 deg/s^3 default
+            max_jerk = [1000.0] * dof  # 500 deg/s^3 default
             
         self.max_velocity = np.array(max_velocity)
         self.max_acceleration = np.array(max_acceleration)

@@ -179,7 +179,11 @@ class HardwareTeleopController:
         self.waypoint_loop_times = deque(maxlen=100)
         self.control_second = 1/self.control_rate_hz_ll
         
-        
+        # Ruckig 速度状态管理
+        self._ruckig_velocity = np.zeros(7, dtype=float)  # 存储Ruckig输出的速度
+        self._last_velocity_sync_time = time.time()  # 上次速度同步时间
+        self._velocity_sync_interval = 1  # 速度同步间隔（秒）
+        self._velocity_sync_alpha = 0.85  # 同步时的混合系数 (0-1)
         # Initialize gripper positions
         for name, config in self.manipulator_config.items():
             if "gripper_config" in config:
@@ -218,7 +222,9 @@ class HardwareTeleopController:
         self.solver.dt = self.ik_dt
         self.solver.mask_fbase(True)
         self.solver.add_kinetic_energy_regularization_task(1e-6)
-
+        # 初始化Ruckig速度为零
+        self._ruckig_velocity = np.zeros(7, dtype=float)
+        self._last_velocity_sync_time = time.time()
         # Set initial configuration
         if self.q_init is not None:
             self.placo_robot.state.q=self.q_init.copy()
@@ -725,40 +731,77 @@ class HardwareTeleopController:
                     if (current_pos_deg is None) or (len(current_pos_deg) < 7):
                         global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))
 
-                        # 1) 优先用硬件返回的当前速度（若可用）
-                        if isinstance(current_speed, (list, np.ndarray)) and len(current_speed) == 7:
+                        # 优先使用 Ruckig 维护的速度（如果已经初始化且非零）
+                        if hasattr(self, '_ruckig_velocity') and np.any(self._ruckig_velocity != 0):
+                            # 使用 Ruckig 维护的速度，但要衰减以确保安全
+                            v_cmd = self._ruckig_velocity.copy() * 0.9
+                            print("[WARN] Position read failed, using Ruckig maintained velocity (decayed)")
+                            
+                            # 同时衰减内部维护的速度，避免累积
+                            self._ruckig_velocity *= 0.95
+                            
+                        # 如果 Ruckig 速度还没有初始化或全为零，尝试使用硬件速度
+                        elif isinstance(current_speed, (list, np.ndarray)) and len(current_speed) == 7:
                             v_cmd = np.array(current_speed, dtype=float) * 0.95
+                            print("[WARN] Position read failed, using hardware velocity")
+                            
+                        # 最后的兜底：使用上一次成功的命令或规划器的速度
                         else:
-                            # 2) 兜底：用规划器内部记录的当前速度（或过滤后的目标速度）
                             try:
-                                v_cmd = np.array(self.ruckig_planner.current_velocity, dtype=float)
-                                if v_cmd.shape[0] != 7:
-                                    raise ValueError("planner current_velocity shape mismatch")
+                                # 尝试使用上一次成功的命令
+                                v_cmd = getattr(self, "_last_v_cmd", None)
+                                if v_cmd is None:
+                                    # 如果没有上一次命令，使用规划器的当前速度
+                                    v_cmd = np.array(self.ruckig_planner.current_velocity, dtype=float)
+                                    if v_cmd.shape[0] != 7:
+                                        raise ValueError("planner current_velocity shape mismatch")
                             except Exception:
-                                v_cmd = np.array(self.ruckig_planner.filtered_target_velocity, dtype=float)
-
+                                # 最终兜底：使用过滤后的目标速度或零速度
+                                try:
+                                    v_cmd = np.array(self.ruckig_planner.filtered_target_velocity, dtype=float)
+                                except:
+                                    v_cmd = np.zeros(7, dtype=float)
+                                    print("[WARN] All velocity sources failed, using zero velocity")
+                            
                             v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0) * 0.90
-
+                        
                         # 数值安全 + 限幅
                         v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0)
                         v_cmd = np.clip(v_cmd, -global_cap, global_cap)
-
-                        # 发送兜底速度
+                        
+                        # 发送兜底速度（使用位置控制方式）
                         try:
-                            ret = self.robot_controller.send_joint_speeds_udp(v_cmd, speed_cap=global_cap)
-                            if not ret.get("ok", False):
-                                # 再次兜底：上一拍成功的命令（若有），进一步衰减再发一次
-                                v_hold = getattr(self, "_last_v_cmd", v_cmd) * 0.8
-                                self.robot_controller.send_joint_speeds_udp(v_hold, speed_cap=global_cap)
+                            if not self._simulation_mode:
+                                ret = self.robot_controller.send_joint_speeds_position_based(
+                                    v_cmd, 
+                                    dt=1.0/self.control_rate_hz_ll
+                                )
+                                
+                                if not ret.get("ok", False):
+                                    # 再次兜底：进一步衰减速度
+                                    v_hold = v_cmd * 0.8
+                                    self.robot_controller.send_joint_speeds_position_based(
+                                        v_hold, 
+                                        dt=1.0/self.control_rate_hz_ll
+                                    )
+                                    print("[WARN] Fallback velocity send retry with further decay")
+                                    
                         except Exception as e:
-                            print(f"[WARN] fallback velocity send failed: {e}")
-
-                        # 记录上一次成功发送的命令，便于下一次兜底
-                        try:
-                            self._last_v_cmd = v_cmd.copy()
-                        except Exception:
-                            pass
-
+                            print(f"[ERROR] Fallback velocity send failed: {e}")
+                            # 严重错误时，考虑发送零速度停止
+                            try:
+                                zero_vel = np.zeros(7, dtype=float)
+                                self.robot_controller.send_joint_speeds_position_based(
+                                    zero_vel, 
+                                    dt=1.0/self.control_rate_hz_ll
+                                )
+                                print("[EMERGENCY] Sent zero velocity to stop robot")
+                            except:
+                                pass
+                        
+                        # 记录上一次发送的命令
+                        self._last_v_cmd = v_cmd.copy()
+                        
                         # 维持循环频率
                         elapsed = time.time() - loop_start
                         self.control_loop_times.append(elapsed)
@@ -771,25 +814,42 @@ class HardwareTeleopController:
                 # 2) 把最新硬件位置写入缓存，供 IK 线程使用
                 with self._robot_state_lock:
                     self._robot_pos_deg_cache = current_pos_deg.copy()
+                # 3) Ruckig 走一步（用硬件读到的 current_pos，但速度用Ruckig维护的）
+                # 检查是否需要同步速度
+                current_time = time.time()
+                if current_time - self._last_velocity_sync_time > self._velocity_sync_interval:
+                    # 定期同步：将Ruckig速度与实际速度混合
+                    if isinstance(current_speed, (list, np.ndarray)) and len(current_speed) == 7:
+                        actual_speed = np.array(current_speed, dtype=float)
+                        # 加权平均：alpha * ruckig_vel + (1-alpha) * actual_vel
+                        self._ruckig_velocity = (
+                            self._velocity_sync_alpha * self._ruckig_velocity + 
+                            (1 - self._velocity_sync_alpha) * actual_speed
+                        )
+                        print(f"[SYNC] Velocity synced: ruckig={np.max(np.abs(self._ruckig_velocity)):.1f}°/s, actual={np.max(np.abs(actual_speed)):.1f}°/s")
+                    self._last_velocity_sync_time = current_time
                 # 3) Ruckig 走一步（用硬件读到的 current_pos）
                 target_vel_deg_s, target_pos_deg, reached, ok = self.ruckig_planner.compute_trajectory_step(
                     current_pos_deg,
-                    current_speed
+                    self._ruckig_velocity
                 )
                 print(f"[CONTROL THREAD]after compute target_vel_deg_s:{target_vel_deg_s}")
                 print(f"[CONTROL THREAD]after compute target_pos_deg:{target_pos_deg}")
                 if not ok:
-                    # Ruckig 本周期解算失败 → fallback：维持当前速度，不要猛置 0
-                    v_cmd = np.array(current_speed, dtype=float) if isinstance(current_speed, (list, np.ndarray)) and len(current_speed)==7 else getattr(self, "_last_v_cmd", np.zeros(7))
-                    v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0) * 0.95
-                    
-                    v_cmd = np.clip(v_cmd, -20, 20)
-                    print("[CONTROL THREAD] ruckig解算失败")
+                    # Ruckig 本周期解算失败 → fallback：使用Ruckig维护的速度
+                    v_cmd = self._ruckig_velocity.copy() * 0.95
+                    v_cmd = np.nan_to_num(v_cmd, nan=0.0, posinf=0.0, neginf=0.0)
+                    vmax = np.asarray(self.ruckig_planner.max_velocity, float)
+                    v_cmd = np.clip(v_cmd, -vmax, vmax)
+                    self._ruckig_velocity*=0.95
+                    print("[CONTROL THREAD] ruckig解算失败，使用Ruckig维护的速度")
                 else:
+                    self._ruckig_velocity = np.array(target_vel_deg_s, dtype=float)
                     v_cmd = np.nan_to_num(target_vel_deg_s, nan=0.0, posinf=0.0, neginf=0.0)
                     # 轻微缩边，避免精度贴边
                     vmax = self.ruckig_planner.max_velocity
-                    v_cmd = np.clip(v_cmd, -20, 20)
+                    vmax = np.asarray(self.ruckig_planner.max_velocity, float)
+                    v_cmd = np.clip(v_cmd, -vmax, vmax)
                     print(f"[CONTROL THREAD get ]vcmd:{v_cmd}")
                 # 4) 直接**发速度**UDP（优先尝试 set_joint_speeds_udp）
                 global_cap = float(np.max(np.abs(self.ruckig_planner.max_velocity)))

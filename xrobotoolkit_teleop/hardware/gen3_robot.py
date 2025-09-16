@@ -325,7 +325,7 @@ class KortexRobotController:
             v = float(velocities[i])
             if speed_cap is not None:
                 # cap = abs(float(speed_cap))
-                cap = abs(float(10))
+                cap = abs(float(30))
                 v = max(-cap, min(cap, v))
             self.base_command.actuators[i].position = fb.actuators[i].position  # 跟随测量
             self.base_command.actuators[i].velocity = v
