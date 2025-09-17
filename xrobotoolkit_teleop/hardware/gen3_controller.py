@@ -1056,7 +1056,7 @@ class HardwareTeleopController:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
         
         # 位置图 - 只显示前3个关节
-        for i in range(1):
+        for i in range(7):
             ax1.plot(times, current_pos[:, i], '-', label=f'Joint {i+1} Current', linewidth=1.5)
             ax1.plot(times, target_pos[:, i], '--', label=f'Joint {i+1} Target', alpha=0.7)
         
@@ -1066,7 +1066,7 @@ class HardwareTeleopController:
         ax1.grid(True, alpha=0.3)
         
         # 速度图
-        for i in range(1):
+        for i in range(7):
             ax2.plot(times, current_vel[:, i], '-', label=f'Joint {i+1} Velocity', linewidth=1.5)
         
         ax2.set_xlabel('Time (seconds)')
