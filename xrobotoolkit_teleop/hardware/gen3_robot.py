@@ -747,10 +747,10 @@ class KortexRobotController:
             positions = []
             
             for actuator in feedback.actuators:
-                deg=actuator.position
-                positions.append(deg)
-            
-            return np.array(positions)
+                deg = actuator.position
+                positions.append(float(deg))
+
+            return np.array(positions, dtype=float)
         
         except Exception as e:
             print(f"ERROR getting joint positions: {e}")

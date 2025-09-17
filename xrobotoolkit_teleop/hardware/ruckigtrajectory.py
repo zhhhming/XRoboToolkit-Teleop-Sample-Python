@@ -27,6 +27,7 @@ class RuckigTrajectoryPlanner:
         waypoint_filter_alpha: float = 0.15,  # 滤波强度 (0-1), 越小越平滑
         waypoint_filter_cutoff_hz: float = None,  # 可选：用截止频率计算alpha
         waypoint_filter_deadband: float = 0.01,  # 死区：变化太小时不更新滤波器
+        waypoint_blend_beta: float = 1.0,  # 输出waypoint与当前位置的融合系数
     ):
         """
         Initialize the Ruckig trajectory planner.
@@ -40,6 +41,9 @@ class RuckigTrajectoryPlanner:
             waypoint_buffer_size: Maximum number of waypoints to keep in buffer
             velocity_filter_tau: Time constant for exponential moving average filter
             simulation_mode: If True, use predicted values as actual feedback
+            enable_waypoint_filter: Whether to enable low-pass filtering on waypoints
+            waypoint_blend_beta: Blend factor between filtered waypoint and
+            current joint position (0-1, closer to 1 favors the waypoint)
         """
         self.dof = dof
         self.control_cycle = control_cycle
@@ -50,6 +54,7 @@ class RuckigTrajectoryPlanner:
          # 低通滤波器配置
         self.enable_waypoint_filter = enable_waypoint_filter
         self.waypoint_filter_deadband = waypoint_filter_deadband
+        self.waypoint_blend_beta = float(np.clip(waypoint_blend_beta, 0.0, 1.0))
 
         # 计算滤波系数
         if waypoint_filter_cutoff_hz is not None:
@@ -186,7 +191,8 @@ class RuckigTrajectoryPlanner:
         alpha: Optional[float] = None,
         cutoff_hz: Optional[float] = None,
         deadband: Optional[float] = None,
-        enabled: Optional[bool] = None
+        enabled: Optional[bool] = None,
+        blend_beta: Optional[float] = None
     ):
         """
         动态调整滤波器参数
@@ -196,10 +202,11 @@ class RuckigTrajectoryPlanner:
             cutoff_hz: 截止频率 (Hz)
             deadband: 死区阈值
             enabled: 是否启用滤波
+            blend_beta: waypoint与当前关节位置融合系数
         """
         with self.waypoint_filter_lock:
             if enabled is not None:
-                self.enable_waypoint_filter = enabled
+                self.enable_waypoint_filter = bool(enabled)
                 
             if deadband is not None:
                 self.waypoint_filter_deadband = deadband
@@ -212,6 +219,8 @@ class RuckigTrajectoryPlanner:
             elif alpha is not None:
                 self.waypoint_filter_alpha = np.clip(alpha, 0.01, 0.99)
                 print(f"[WAYPOINT_FILTER] Set alpha to {self.waypoint_filter_alpha:.3f}")
+            if blend_beta is not None:
+                self.waypoint_blend_beta = float(np.clip(blend_beta, 0.0, 1.0))
 
     def reset_waypoint_filter(self, initial_position: Optional[np.ndarray] = None):
         """
@@ -265,7 +274,7 @@ class RuckigTrajectoryPlanner:
             self.waypoint_queue.append(waypoint)
             self.waypoints_enqueued += 1
     
-    def get_latest_waypoint(self) -> Optional[np.ndarray]:
+    def get_latest_waypoint(self, current_position: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
         """
         Get the most recent waypoint from the queue with optional low-pass filtering.
         
@@ -280,8 +289,15 @@ class RuckigTrajectoryPlanner:
         
         # Apply low-pass filter
         filtered_waypoint = self._apply_waypoint_filter(raw_waypoint)
-        
-        return filtered_waypoint
+        beta = self.waypoint_blend_beta
+        if beta < 1.0:
+            if current_position is None:
+                return filtered_waypoint.copy()
+            else:
+                current = np.array(current_position, dtype=float)
+            filtered_waypoint = beta * filtered_waypoint + (1.0 - beta) * current
+
+        return filtered_waypoint.copy()
     
     def estimate_target_velocity(self) -> np.ndarray:#waypoint线程要快一点，500吧
         """

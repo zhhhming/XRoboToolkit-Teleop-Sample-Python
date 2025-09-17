@@ -217,6 +217,7 @@ class HardwareTeleopController:
             waypoint_filter_alpha=0.01,             # 滤波强度 (0.05-0.2 范围比较好)
             waypoint_filter_cutoff_hz=None,        # 也可以用截止频率: 比如 5.0 Hz
             waypoint_filter_deadband=0.02,         # 死区：小于0.05度的变化不处理
+            waypoint_blend_beta=0.85,              # waypoint与当前位置的融合系数
         )
         if self._simulation_mode:
             self.ruckig_planner.set_simulation_mode(self._simulation_mode,[109, -15+360, 179, 131, -179+360, 53, 8])
@@ -955,7 +956,7 @@ class HardwareTeleopController:
                 #         f"loop={avg_ctrl:.1f}ms")
                 #     last_status_time = now
                 # 3) 直接从Ruckig planner获取最新目标位置
-                target_positions = self.ruckig_planner.get_latest_waypoint()
+                target_positions = self.ruckig_planner.get_latest_waypoint(current_pos_deg)
                                 # 添加数据记录 - 每10次循环记录一次（降低频率）
                 if hasattr(self, '_record_counter'):
                     self._record_counter += 1
