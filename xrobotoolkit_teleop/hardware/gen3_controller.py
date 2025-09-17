@@ -182,7 +182,13 @@ class HardwareTeleopController:
             # 添加夹爪控制的线程锁
         self._gripper_target_lock = threading.Lock()
         self._gripper_targets = {}  # 存储各个夹爪的目标位置
-        
+        self.control_data = {
+        'timestamps': [],
+        'current_positions': [],
+        'current_velocities': [], 
+        'target_positions': []
+        }
+        self.data_start_time = None
 
         # Ruckig 速度状态管理
         self._ruckig_velocity = np.zeros(7, dtype=float)  # 存储Ruckig输出的速度
@@ -208,7 +214,7 @@ class HardwareTeleopController:
             control_cycle=self.control_second,
             # 新增滤波参数
             enable_waypoint_filter=True,           # 启用滤波
-            waypoint_filter_alpha=0.1,             # 滤波强度 (0.05-0.2 范围比较好)
+            waypoint_filter_alpha=0.01,             # 滤波强度 (0.05-0.2 范围比较好)
             waypoint_filter_cutoff_hz=None,        # 也可以用截止频率: 比如 5.0 Hz
             waypoint_filter_deadband=0.02,         # 死区：小于0.05度的变化不处理
         )
@@ -503,11 +509,11 @@ class HardwareTeleopController:
         ])
         
         # 对位移delta应用旋转
-        delta_xyz =R_z_180 @ R_z_90_cw @ delta_xyz 
+        delta_xyz =R_z_90_cw @ delta_xyz 
         
         # 对姿态变化delta_rot应用旋转
         # delta_rot是角轴表示，我们需要将旋转轴也进行变换
-        delta_rot =R_z_180 @  R_z_90_cw @ delta_rot
+        delta_rot =R_z_90_cw @ delta_rot
 
         return delta_xyz, delta_rot
 
@@ -950,6 +956,25 @@ class HardwareTeleopController:
                 #     last_status_time = now
                 # 3) 直接从Ruckig planner获取最新目标位置
                 target_positions = self.ruckig_planner.get_latest_waypoint()
+                                # 添加数据记录 - 每10次循环记录一次（降低频率）
+                if hasattr(self, '_record_counter'):
+                    self._record_counter += 1
+                else:
+                    self._record_counter = 0
+                    self.data_start_time = time.time()
+                    
+                if self._record_counter % 10 == 0:  # 每10次记录一次
+                    if current_pos_deg is not None and len(current_pos_deg) >= 7:
+                        self.control_data['timestamps'].append(time.time() - self.data_start_time)
+                        self.control_data['current_positions'].append(current_pos_deg.copy())
+                        self.control_data['current_velocities'].append(
+                            current_speed.copy() if current_speed is not None and len(current_speed) >= 7 
+                            else np.zeros(7)
+                        )
+                        self.control_data['target_positions'].append(
+                            target_positions.copy() if target_positions is not None 
+                            else np.zeros(7)
+                        )
                 
                 if target_positions is not None:
                     target_positions = np.array(target_positions, dtype=float)
@@ -1007,6 +1032,54 @@ class HardwareTeleopController:
 
         print("Control thread stopped")
         self._shutdown_robot()
+    def save_control_plot(self, filename=None):
+        """保存控制数据图表"""
+        import matplotlib.pyplot as plt
+        
+        if not self.control_data['timestamps']:
+            print("No control data to plot")
+            return
+            
+        if filename is None:
+            from datetime import datetime
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"control_data_{timestamp_str}.png"
+        
+        # 转换为numpy数组
+        times = np.array(self.control_data['timestamps'])
+        current_pos = np.array(self.control_data['current_positions'])
+        current_vel = np.array(self.control_data['current_velocities']) 
+        target_pos = np.array(self.control_data['target_positions'])
+        
+        # 创建图表
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        
+        # 位置图 - 只显示前3个关节
+        for i in range(1):
+            ax1.plot(times, current_pos[:, i], '-', label=f'Joint {i+1} Current', linewidth=1.5)
+            ax1.plot(times, target_pos[:, i], '--', label=f'Joint {i+1} Target', alpha=0.7)
+        
+        ax1.set_ylabel('Position (degrees)')
+        ax1.set_title('Joint Positions (First 3 Joints)')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # 速度图
+        for i in range(1):
+            ax2.plot(times, current_vel[:, i], '-', label=f'Joint {i+1} Velocity', linewidth=1.5)
+        
+        ax2.set_xlabel('Time (seconds)')
+        ax2.set_ylabel('Velocity (deg/s)')
+        ax2.set_title('Joint Velocities (First 3 Joints)')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(filename, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Control data plot saved to: {filename}")
+        print(f"Recorded {len(times)} data points over {times[-1]:.1f} seconds")
 
     def _data_logging_thread(self, stop_event: threading.Event):
         """Dedicated thread for data logging"""
@@ -1110,6 +1183,7 @@ class HardwareTeleopController:
             print("\nKeyboard interrupt received.")
         finally:
             print("Shutting down...")
+            self.save_control_plot()
             self._stop_event.set()
             
             # Wait for threads to finish
