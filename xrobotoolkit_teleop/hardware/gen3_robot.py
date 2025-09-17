@@ -5,6 +5,7 @@ import time
 import threading
 import sys
 import os
+import logging
 
 from kortex_api.TCPTransport import TCPTransport
 from kortex_api.UDPTransport import UDPTransport
@@ -30,6 +31,9 @@ CONNECTION_INACTIVITY_TIMEOUT = 2000  # milliseconds
 
 
 TIMEOUT_DURATION = 20  # seconds
+
+
+logger = logging.getLogger(__name__)
 
 
 class KortexRobotController:
@@ -160,6 +164,62 @@ class KortexRobotController:
 
         if not hasattr(self, "_frame_id"):
             self._frame_id = 0
+
+    def _is_wrong_servoing_mode_error(self, exc: KServerException) -> bool:
+        token = "WRONG_SERVOING_MODE"
+        text_candidates = []
+
+        possible_attrs = ["details", "detail", "message"]
+        for attr in possible_attrs:
+            value = getattr(exc, attr, None)
+            if value:
+                text_candidates.append(str(value))
+
+        if hasattr(exc, "args"):
+            text_candidates.extend(str(arg) for arg in exc.args if arg)
+
+        for method_name in ("get_error_string", "getErrorString"):
+            method = getattr(exc, method_name, None)
+            if callable(method):
+                try:
+                    text = method()
+                except Exception:
+                    continue
+                if text:
+                    text_candidates.append(str(text))
+
+        try:
+            text_candidates.append(str(exc))
+        except Exception:
+            pass
+
+        return any(token in candidate for candidate in text_candidates if candidate)
+
+    def _recover_low_level_mode_from_error(self, exc: KServerException, context: str) -> bool:
+        if not self._is_wrong_servoing_mode_error(exc):
+            return False
+
+        logger.warning(
+            "WRONG_SERVOING_MODE detected while sending %s; re-establishing low-level mode.",
+            context,
+        )
+        logger.debug("Full exception: %s", exc)
+
+        self.in_low_level_mode = False
+        try:
+            logger.info("Re-entering low-level servoing mode after %s command failure", context)
+            self.enter_low_level_mode()
+            self._ensure_base_command_ready()
+        except Exception as recovery_err:
+            logger.exception(
+                "Failed to recover low-level servoing mode after %s command: %s",
+                context,
+                recovery_err,
+            )
+            return False
+
+        logger.info("Low-level servoing mode successfully recovered for %s commands", context)
+        return True
     def enter_velocity_control(self):
         """
         将 Base 切到 LOW_LEVEL，并把所有执行器切换为 VELOCITY 控制模式。
@@ -317,38 +377,41 @@ class KortexRobotController:
         # 3) 确保命令帧准备好
         self._ensure_base_command_ready()
 
-        # 4) 刷新一次反馈，准备把 position 跟随到测量（安全）
-        fb = self.base_cyclic_client.RefreshFeedback()
-
-        # 5) 写入每个关节的速度；位置跟随测量值（防跟随误差）
-        for i in range(self.actuator_count.count):
-            v = float(velocities[i])
-            if speed_cap is not None:
-                # cap = abs(float(speed_cap))
-                cap = abs(float(30))
-                v = max(-cap, min(cap, v))
-            self.base_command.actuators[i].position = fb.actuators[i].position  # 跟随测量
-            self.base_command.actuators[i].velocity = v
-            self.base_command.actuators[i].flags = 1
-            self.base_command.actuators[i].command_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
-
-        # 6) 帧号自增（16位回绕）
-        self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
-        self.base_command.frame_id = self._frame_id
         MAX_RETRIES = 3
-    
+
         for attempt in range(MAX_RETRIES):
-        # 7) 发送一帧
             try:
+                # 4) 刷新一次反馈，准备把 position 跟随到测量（安全）
+                fb = self.base_cyclic_client.RefreshFeedback()
+
+                # 5) 写入每个关节的速度；位置跟随测量值（防跟随误差）
+                next_frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+                for i in range(self.actuator_count.count):
+                    v = float(velocities[i])
+                    if speed_cap is not None:
+                        # cap = abs(float(speed_cap))
+                        cap = abs(float(30))
+                        v = max(-cap, min(cap, v))
+                    self.base_command.actuators[i].position = fb.actuators[i].position  # 跟随测量
+                    self.base_command.actuators[i].velocity = v
+                    self.base_command.actuators[i].flags = 1
+                    self.base_command.actuators[i].command_id = next_frame_id
+
+                # 6) 帧号自增（16位回绕）
+                self._frame_id = next_frame_id
+                self.base_command.frame_id = self._frame_id
+
+                # 7) 发送一帧
                 self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
                 return {"ok": True}
             except KServerException as e:
+                if self._recover_low_level_mode_from_error(e, "joint speed"):
+                    continue
                 if attempt < MAX_RETRIES - 1:
-                    print(f"[WARN] Attempt {attempt+1} failed, retrying: {e}")
+                    logger.warning("Joint speed attempt %d failed, retrying: %s", attempt + 1, e)
                     time.sleep(0.001)  # 短暂延迟后重试
                     continue
-                else:
-                    return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
+                return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
             except Exception as e:
                 return {"ok": False, "err": f"{e}"}
 
@@ -434,39 +497,39 @@ class KortexRobotController:
         # 3) 确保命令帧准备好
         self._ensure_base_command_ready()
 
-        # 4) 刷新一次反馈
-        fb = self.base_cyclic_client.RefreshFeedback()
-
-        # 5) 写入每个关节的位置（类似C++代码）
-        for i in range(self.actuator_count.count):
-            target_pos = float(positions[i])
-            # print(f"target_pos{i}:{target_pos}")
-            # 归一化到0-360度范围（仿照C++的fmod操作）
-            target_pos = target_pos % 360.0
-            
-            # 设置位置命令
-            self.base_command.actuators[i].position = target_pos
-            self.base_command.actuators[i].velocity = 0.0  # 在位置模式下速度设为0
-            self.base_command.actuators[i].flags = 1
-            self.base_command.actuators[i].command_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
-
-        # 6) 帧号自增（16位回绕）
-        self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
-        self.base_command.frame_id = self._frame_id
-        
-        # 7) 发送命令
+        # 4) 发送命令
         MAX_RETRIES = 3
         for attempt in range(MAX_RETRIES):
             try:
+                next_frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+
+                # 写入每个关节的位置（类似C++代码）
+                for i in range(self.actuator_count.count):
+                    target_pos = float(positions[i])
+                    target_pos = target_pos % 360.0
+
+                    self.base_command.actuators[i].position = target_pos
+                    self.base_command.actuators[i].velocity = 0.0  # 在位置模式下速度设为0
+                    self.base_command.actuators[i].flags = 1
+                    self.base_command.actuators[i].command_id = next_frame_id
+
+                self._frame_id = next_frame_id
+                self.base_command.frame_id = self._frame_id
+
                 self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
                 return {"ok": True}
             except KServerException as e:
+                if self._recover_low_level_mode_from_error(e, "joint position"):
+                    continue
                 if attempt < MAX_RETRIES - 1:
-                    print(f"[WARN] Position command attempt {attempt+1} failed, retrying: {e}")
+                    logger.warning(
+                        "Position command attempt %d failed, retrying: %s",
+                        attempt + 1,
+                        e,
+                    )
                     time.sleep(0.001)
                     continue
-                else:
-                    return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
+                return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
             except Exception as e:
                 return {"ok": False, "err": f"{e}"}
 
@@ -494,86 +557,106 @@ class KortexRobotController:
         if not hasattr(self, 'in_low_level_mode') or not self.in_low_level_mode:
             print("Warning: Not in low-level mode. Entering low-level mode...")
             self.enter_low_level_mode()
-        
-        # 确保夹爪命令结构存在
-        grip_cmd = self.base_command.interconnect.gripper_command
-        if len(grip_cmd.motor_cmd) == 0:
-            m = grip_cmd.motor_cmd.add()
-        else:
-            m = grip_cmd.motor_cmd[0]
-        
-        try:
-            # 1. 获取当前反馈
-            fb = self.base_cyclic_client.RefreshFeedback()
-            
-            # 获取当前位置和速度
-            if len(fb.interconnect.gripper_feedback.motor) > 0:
-                current_pos_raw = fb.interconnect.gripper_feedback.motor[0].position
-                current_velocity_raw = fb.interconnect.gripper_feedback.motor[0].velocity  # 直接从反馈获取速度
-            else:
-                current_pos_raw = 0.0
-                current_velocity_raw = 0.0
-            
-            # 2. 转换位置到百分比 (参考示例代码，0%=全开，100%=全闭)
-            # 注意：position参数是0-1范围，需要转换为0-100%
-            target_pct = max(0.0, min(100.0, position * 100.0))
-            current_pct = current_pos_raw  # BaseCyclic反馈已经是百分比
-            print(f"[GRIPPER THREAD]current_pos:{current_pos_raw}")
-            # 3. 计算位置误差
-            position_error = target_pct - current_pct
-            reached = (abs(position_error) <= tol_pct)
-            
-            # 4. 计算期望速度（基于误差的比例控制）
-            if reached:
-                desired_velocity = 0.0
-            else:
-                desired_velocity = kp * abs(position_error)
-                desired_velocity = min(vel_cap_pct, desired_velocity)
-            
-            # 5. 速度混合：避免突变
-            # 使用反馈的当前速度
-            current_velocity = abs(current_velocity_raw)  # 使用绝对值，因为方向由位置误差决定
-            
-            # 当误差大时更多使用当前速度，误差小时更多使用期望速度
-            error_normalized = min(abs(position_error) / 20.0, 1.0)  # 归一化误差到0-1
-            dynamic_alpha = velocity_blend_alpha * (1.0 - error_normalized * 0.3)  # 误差大时减小alpha
-            
-            # 混合速度
-            blended_velocity = (1 - dynamic_alpha) * current_velocity + dynamic_alpha * desired_velocity
-            
-            # 限制速度上限
-            blended_velocity = min(blended_velocity, vel_cap_pct)
-            
-            # 6. 设置夹爪命令（参考示例代码的方式）
-            m.position = float(target_pct)  # 目标位置
-            m.velocity = float(blended_velocity)  # 混合后的速度
-            m.force = float(force_pct)  # 夹持力
-            
-            # 7. 发送命令
-            self._frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
-            self.base_command.frame_id = self._frame_id
-            
-            # 更新所有执行器的command_id（保持同步）
-            for i in range(len(self.base_command.actuators)):
-                self.base_command.actuators[i].command_id = self._frame_id
-            
-            # 更新夹爪的command_id
-            self.base_command.interconnect.gripper_command.command_id.identifier = self._frame_id
-            
-            # 发送命令
-            self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
-            
-            return {
-                "ok": True, 
-                "reached": reached, 
-                "err_pct": float(position_error),
-                "velocity": float(blended_velocity),
-                "current_velocity": float(current_velocity)
-            }
-            
-        except Exception as e:
-            print(f"ERROR setting gripper position via UDP: {e}")
-            return {"ok": False, "reached": False, "err_pct": None, "velocity": 0.0}
+
+        self._ensure_base_command_ready()
+
+        MAX_RETRIES = 3
+        last_error: str | None = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                # 确保夹爪命令结构存在
+                grip_cmd = self.base_command.interconnect.gripper_command
+                if len(grip_cmd.motor_cmd) == 0:
+                    m = grip_cmd.motor_cmd.add()
+                else:
+                    m = grip_cmd.motor_cmd[0]
+
+                # 1. 获取当前反馈
+                fb = self.base_cyclic_client.RefreshFeedback()
+
+                # 获取当前位置和速度
+                if len(fb.interconnect.gripper_feedback.motor) > 0:
+                    current_pos_raw = fb.interconnect.gripper_feedback.motor[0].position
+                    current_velocity_raw = fb.interconnect.gripper_feedback.motor[0].velocity  # 直接从反馈获取速度
+                else:
+                    current_pos_raw = 0.0
+                    current_velocity_raw = 0.0
+
+                # 2. 转换位置到百分比 (参考示例代码，0%=全开，100%=全闭)
+                # 注意：position参数是0-1范围，需要转换为0-100%
+                target_pct = max(0.0, min(100.0, position * 100.0))
+                current_pct = current_pos_raw  # BaseCyclic反馈已经是百分比
+                print(f"[GRIPPER THREAD]current_pos:{current_pos_raw}")
+                # 3. 计算位置误差
+                position_error = target_pct - current_pct
+                reached = (abs(position_error) <= tol_pct)
+
+                # 4. 计算期望速度（基于误差的比例控制）
+                if reached:
+                    desired_velocity = 0.0
+                else:
+                    desired_velocity = kp * abs(position_error)
+                    desired_velocity = min(vel_cap_pct, desired_velocity)
+
+                # 5. 速度混合：避免突变
+                # 使用反馈的当前速度
+                current_velocity = abs(current_velocity_raw)  # 使用绝对值，因为方向由位置误差决定
+
+                # 当误差大时更多使用当前速度，误差小时更多使用期望速度
+                error_normalized = min(abs(position_error) / 20.0, 1.0)  # 归一化误差到0-1
+                dynamic_alpha = velocity_blend_alpha * (1.0 - error_normalized * 0.3)  # 误差大时减小alpha
+
+                # 混合速度
+                blended_velocity = (1 - dynamic_alpha) * current_velocity + dynamic_alpha * desired_velocity
+
+                # 限制速度上限
+                blended_velocity = min(blended_velocity, vel_cap_pct)
+
+                # 6. 设置夹爪命令（参考示例代码的方式）
+                m.position = float(target_pct)  # 目标位置
+                m.velocity = float(blended_velocity)  # 混合后的速度
+                m.force = float(force_pct)  # 夹持力
+
+                # 7. 发送命令
+                next_frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
+                self._frame_id = next_frame_id
+                self.base_command.frame_id = self._frame_id
+
+                # 更新所有执行器的command_id（保持同步）
+                for i in range(len(self.base_command.actuators)):
+                    self.base_command.actuators[i].command_id = self._frame_id
+
+                # 更新夹爪的command_id
+                self.base_command.interconnect.gripper_command.command_id.identifier = self._frame_id
+
+                # 发送命令
+                self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+
+                return {
+                    "ok": True,
+                    "reached": reached,
+                    "err_pct": float(position_error),
+                    "velocity": float(blended_velocity),
+                    "current_velocity": float(current_velocity)
+                }
+
+            except KServerException as e:
+                last_error = str(e)
+                if self._recover_low_level_mode_from_error(e, "gripper position"):
+                    continue
+                if attempt < MAX_RETRIES - 1:
+                    logger.warning("Gripper command attempt %d failed, retrying: %s", attempt + 1, e)
+                    time.sleep(0.001)
+                    continue
+                logger.error("Gripper command failed after retries: %s", e)
+                break
+            except Exception as e:
+                last_error = str(e)
+                logger.error("ERROR setting gripper position via UDP: %s", e)
+                break
+
+        return {"ok": False, "reached": False, "err_pct": None, "velocity": 0.0, "err": last_error}
         
     def _check_for_end_or_abort(self, event):
         """Callback function to check for action completion"""
