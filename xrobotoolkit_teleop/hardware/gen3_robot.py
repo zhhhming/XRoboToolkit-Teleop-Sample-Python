@@ -30,7 +30,7 @@ SESSION_INACTIVITY_TIMEOUT = 60000  # milliseconds
 CONNECTION_INACTIVITY_TIMEOUT = 2000  # milliseconds
 
 
-TIMEOUT_DURATION = 20  # seconds
+TIMEOUT_DURATION = 0.5  # seconds
 
 
 logger = logging.getLogger(__name__)
@@ -271,6 +271,22 @@ class KortexRobotController:
         self.in_velocity_mode = False
         print("All actuators are back to POSITION control mode.")
 
+
+    def _is_timeout_exception(self, exc: Exception) -> bool:
+        if isinstance(exc, TimeoutError):
+            return True
+
+        try:
+            message = str(exc)
+        except Exception:
+            return False
+
+        if not message:
+            return False
+
+        upper_message = message.upper()
+        return "TIMEOUT" in upper_message or "TIMED OUT" in upper_message
+    
     def enter_low_level_mode(self):
         """进入低级控制模式"""
         print("Entering low-level servoing mode...")
@@ -485,6 +501,7 @@ class KortexRobotController:
             positions: 长度 = 执行器数量 的数组（度）
             position_tolerance: 位置容差
         """
+        start_time=time.time()
         # 1) 确保处于低层模式，但不切换到VELOCITY模式
         if not getattr(self, "in_low_level_mode", False):
             print("[INFO] Not in LOW_LEVEL, entering...")
@@ -493,12 +510,18 @@ class KortexRobotController:
         # 2) 检查输入长度
         if len(positions) != self.actuator_count.count:
             return {"ok": False, "err": f"Expected {self.actuator_count.count} positions, got {len(positions)}"}
+        
 
         # 3) 确保命令帧准备好
         self._ensure_base_command_ready()
+        print(f"[CONTROL JOINT01] comfirm time:{time.time()-start_time:4f}")
+
 
         # 4) 发送命令
         MAX_RETRIES = 3
+        router_options = RouterClientSendOptions()
+        router_options.timeout_ms = int(TIMEOUT_DURATION * 1000)
+
         for attempt in range(MAX_RETRIES):
             try:
                 next_frame_id = (getattr(self, "_frame_id", 0) + 1) & 0xFFFF
@@ -516,7 +539,12 @@ class KortexRobotController:
                 self._frame_id = next_frame_id
                 self.base_command.frame_id = self._frame_id
 
-                self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
+                self.base_feedback = self.base_cyclic_client.Refresh(
+                    self.base_command,
+                    options=router_options,
+                )
+                print(f"[CONTROL JOINT02] fb time:{time.time()-start_time:4f}")
+
                 return {"ok": True}
             except KServerException as e:
                 if self._recover_low_level_mode_from_error(e, "joint position"):
@@ -531,7 +559,20 @@ class KortexRobotController:
                     continue
                 return {"ok": False, "err": f"Failed after {MAX_RETRIES} attempts: {e}"}
             except Exception as e:
+                if self._is_timeout_exception(e):
+                    logger.error(
+                        "Joint position command timed out on attempt %d: %s",
+                        attempt + 1,
+                        e,
+                    )
+                    return {"ok": False, "err": f"{e}", "timeout": True}
+
+                logger.exception(
+                    "Unexpected error while sending joint positions on attempt %d",
+                    attempt + 1,
+                )
                 return {"ok": False, "err": f"{e}"}
+
 
     def set_gripper_position_udp(
         self,
@@ -554,15 +595,18 @@ class KortexRobotController:
             force_pct: 夹持力百分比
             velocity_blend_alpha: 速度混合系数 (0-1, 越大越接近期望速度)
         """
+        start_time=time.time()
         if not hasattr(self, 'in_low_level_mode') or not self.in_low_level_mode:
             print("Warning: Not in low-level mode. Entering low-level mode...")
             self.enter_low_level_mode()
 
         self._ensure_base_command_ready()
-
+        print(f"[CONTROL GRIPPER01] comfirm time:{time.time()-start_time:4f}")
         MAX_RETRIES = 3
         last_error: str | None = None
-
+        router_options = RouterClientSendOptions()
+        router_options.timeout_ms = int(TIMEOUT_DURATION * 1000)
+        
         for attempt in range(MAX_RETRIES):
             try:
                 # 确保夹爪命令结构存在
@@ -574,7 +618,7 @@ class KortexRobotController:
 
                 # 1. 获取当前反馈
                 fb = self.base_cyclic_client.RefreshFeedback()
-
+                print(f"[CONTROL GRIPPER02] get fb time:{time.time()-start_time:4f}")
                 # 获取当前位置和速度
                 if len(fb.interconnect.gripper_feedback.motor) > 0:
                     current_pos_raw = fb.interconnect.gripper_feedback.motor[0].position
@@ -587,7 +631,7 @@ class KortexRobotController:
                 # 注意：position参数是0-1范围，需要转换为0-100%
                 target_pct = max(0.0, min(100.0, position * 100.0))
                 current_pct = current_pos_raw  # BaseCyclic反馈已经是百分比
-                print(f"[GRIPPER THREAD]current_pos:{current_pos_raw}")
+                print(f"[GRIPPER GRIPPER03]current_pos:{current_pos_raw}")
                 # 3. 计算位置误差
                 position_error = target_pct - current_pct
                 reached = (abs(position_error) <= tol_pct)
@@ -629,10 +673,11 @@ class KortexRobotController:
 
                 # 更新夹爪的command_id
                 self.base_command.interconnect.gripper_command.command_id.identifier = self._frame_id
+                print(f"[CONTROL GRIPPER04] prepare time:{time.time()-start_time:4f}")
 
                 # 发送命令
-                self.base_feedback = self.base_cyclic_client.Refresh(self.base_command)
-
+                self.base_feedback = self.base_cyclic_client.Refresh(self.base_command,options=router_options)
+                print(f"[CONTROL GRIPPER05] send command time:{time.time()-start_time:4f}")
                 return {
                     "ok": True,
                     "reached": reached,
@@ -825,8 +870,11 @@ class KortexRobotController:
         Returns:
             numpy array of current joint positions (in degrees)
         """
+        start_time=time.time()
+        
         try:
             feedback = self.base_cyclic_client.RefreshFeedback()
+            print(f"[CONTROL THREAD] get joint position time:{time.time()-start_time:4f}")
             positions = []
             
             for actuator in feedback.actuators:
@@ -846,8 +894,10 @@ class KortexRobotController:
         Returns:
             numpy array of current joint velocities (in degrees/second)
         """
+        start_time=time.time()
         try:
             feedback = self.base_cyclic_client.RefreshFeedback()
+            print(f"[CONTROL THREAD] get joint speeds time:{time.time()-start_time:4f}")
             speeds = []
             for actuator in feedback.actuators:
                 speeds.append(actuator.velocity)  # deg/s from BaseCyclic feedback

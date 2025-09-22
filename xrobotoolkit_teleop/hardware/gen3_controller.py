@@ -7,7 +7,7 @@ import os
 import json
 from typing import Dict, Any
 from datetime import datetime
-
+import logging
 import cv2
 import meshcat.transformations as tf
 import numpy as np
@@ -29,6 +29,7 @@ from xrobotoolkit_teleop.utils.geometry import (
 )
 from xrobotoolkit_teleop.utils.parallel_gripper_utils import calc_parallel_gripper_position
 
+logger = logging.getLogger(__name__)
 
 class DataLogger:
     """Simple data logger for teleoperation sessions"""
@@ -171,8 +172,8 @@ class HardwareTeleopController:
 
         # Ruckig 线程频率与计时 deque（ms）
         from collections import deque
-        self.waypoint_rate_hz = 700.0      # 你可按需改
-        self.control_rate_hz_ll = 600.0   # 低层控制 1 kHz
+        self.waypoint_rate_hz = 500.0      # 你可按需改
+        self.control_rate_hz_ll = 300.0   # 低层控制 1 kHz
         self._waypoint_dt = 1.0 / self.waypoint_rate_hz
         self._control_dt_ll = 1.0 / self.control_rate_hz_ll
         self.control_loop_times = deque(maxlen=100)
@@ -210,14 +211,16 @@ class HardwareTeleopController:
         # Initialize robot controller
         if not self._simulation_mode:
             self.robot_controller = KortexRobotController() 
+            self.robot_controller.enter_low_level_mode()
+            time.sleep(0.5)
         self.ruckig_planner = RuckigTrajectoryPlanner(
             control_cycle=self.control_second,
             # 新增滤波参数
             enable_waypoint_filter=True,           # 启用滤波
-            waypoint_filter_alpha=0.01,             # 滤波强度 (0.05-0.2 范围比较好)
+            waypoint_filter_alpha=0.02,             # 滤波强度 (0.05-0.2 范围比较好)
             waypoint_filter_cutoff_hz=None,        # 也可以用截止频率: 比如 5.0 Hz
-            waypoint_filter_deadband=0.02,         # 死区：小于0.05度的变化不处理
-            waypoint_blend_beta=0.85,              # waypoint与当前位置的融合系数
+            waypoint_filter_deadband=0.01,         # 死区：小于0.05度的变化不处理
+            waypoint_blend_beta=0.9,              # waypoint与当前位置的融合系数
         )
         if self._simulation_mode:
             self.ruckig_planner.set_simulation_mode(self._simulation_mode,[109, -15+360, 179, 131, -179+360, 53, 8])
@@ -510,11 +513,11 @@ class HardwareTeleopController:
         ])
         
         # 对位移delta应用旋转
-        delta_xyz =R_z_90_cw @ delta_xyz 
+        delta_xyz = R_z_90_cw @ delta_xyz 
         
         # 对姿态变化delta_rot应用旋转
         # delta_rot是角轴表示，我们需要将旋转轴也进行变换
-        delta_rot =R_z_90_cw @ delta_rot
+        delta_rot = R_z_90_cw @ delta_rot
 
         return delta_xyz, delta_rot
 
@@ -747,6 +750,9 @@ class HardwareTeleopController:
             sleep_time = (1.0 / self.ik_rate_hz) - elapsed_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
+            else:
+                # print(f"[IK_THREAD] overrun:{np.abs(sleep_time)}")
+                pass
         
         print("IK thread stopped")
 #要先确认有目标，要么就在init的时候把机械臂的坐标赋值到placo去
@@ -758,12 +764,14 @@ class HardwareTeleopController:
         last_status_time = time.time()
         last_sent_positions = None  # 防首次使用未定义
         last_cmd_positions = None   # 维持1kHz心跳
+        thread_start = time.time()
         while not stop_event.is_set():
             loop_start = time.time()
+            print(f"[CONTROL_THREAD01]start time:{loop_start-thread_start:4f}")
             try:
                 with self._gripper_target_lock:
                     gripper_targets = self._gripper_targets.copy()
-                
+                print(f"[CONTROL_THREAD02] get time:{time.time()-thread_start:4f}")
                 for gripper_name, target_pos in gripper_targets.items():
                     if target_pos is not None and not self._simulation_mode:
                         # 获取夹爪配置
@@ -779,7 +787,7 @@ class HardwareTeleopController:
                                 force_pct=gripper_config.get("force", 5.0),
                                 velocity_blend_alpha=gripper_config.get("velocity_blend_alpha", 0.7)
                             )
-                            
+                            print(f"[CONTROL THREAD03] gripper time:{time.time()-thread_start:4f}")
                             # 可选：打印调试信息
                             if result.get("reached", False):
                                 print(f"Gripper {gripper_name} reached target")
@@ -797,7 +805,7 @@ class HardwareTeleopController:
                     
                     current_pos_deg = self.robot_controller.get_joint_positions()
                     current_speed = self.robot_controller.get_joint_speeds()
-
+                    print(f"[CONTROL THREAD04] gettt time {time.time()-thread_start:4f}")
                     # print(f"[CONTROL THREAD]current_speed:{current_speed}")
                     if (current_pos_deg is None) or (len(current_pos_deg) < 7):
                         print("[WARN] Position read failed, skipping this cycle")
@@ -893,6 +901,8 @@ class HardwareTeleopController:
                 # 2) 把最新硬件位置写入缓存，供 IK 线程使用
                 with self._robot_state_lock:
                     self._robot_pos_deg_cache = current_pos_deg.copy()
+                    print(f"[CONTROL THREAD05] write time {time.time()-thread_start:4f}")
+                
                 # 3) Ruckig 走一步（用硬件读到的 current_pos，但速度用Ruckig维护的）
                 # 检查是否需要同步速度
                 # print(f"[CONTROL THREAD] middle time:{time.time()}")
@@ -958,6 +968,8 @@ class HardwareTeleopController:
                 # 3) 直接从Ruckig planner获取最新目标位置
                 target_positions = self.ruckig_planner.get_latest_waypoint(current_pos_deg)
                                 # 添加数据记录 - 每10次循环记录一次（降低频率）
+                print(f"[CONTROL THREAD06] get waypoint time {time.time()-thread_start:4f}")
+
                 if hasattr(self, '_record_counter'):
                     self._record_counter += 1
                 else:
@@ -976,6 +988,7 @@ class HardwareTeleopController:
                             target_positions.copy() if target_positions is not None 
                             else np.zeros(7)
                         )
+                print(f"[CONTROL THREAD07] print time {time.time()-thread_start:4f}")
                 
                 if target_positions is not None:
                     target_positions = np.array(target_positions, dtype=float)
@@ -989,16 +1002,55 @@ class HardwareTeleopController:
                     # print(f"[CONTROL THREAD] raw_target: {target_positions}")
                     # print(f"[CONTROL THREAD] adjusted_target: {adjusted_target}")
                     
-                    
+                    import logging
                     # 4) 发送位置指令（仅当需要更新时）
                     if not self._simulation_mode:
                         ret = self.robot_controller.send_joint_positions_udp(adjusted_target)
+                        print(f"[CONTROL THREAD08] sent time {time.time()-thread_start:4f}")
+
                         if ret.get("ok", False):
                             last_sent_positions = adjusted_target.copy()
                             print("[CONTROL THREAD] 位置指令发送成功！")
                         else:
-                            ret = self.robot_controller.send_joint_positions_udp(last_sent_positions)
-                            print(f"[CONTROL THREAD] 位置指令发送失败: {ret.get('err', 'unknown error')}")
+                            err_msg = ret.get("err", "unknown error")
+                            if ret.get("timeout"):
+                                logger.error(
+                                    "[CONTROL THREAD] Joint position command timed out: %s",
+                                    err_msg,
+                                )
+                            else:
+                                logger.error(
+                                    "[CONTROL THREAD] Joint position command failed: %s",
+                                    err_msg,
+                                )
+
+                            print(f"[CONTROL THREAD] 位置指令发送失败: {err_msg}")
+
+                            if (
+                                last_sent_positions is not None
+                                and not stop_event.is_set()
+                            ):
+                                retry_ret = self.robot_controller.send_joint_positions_udp(
+                                    last_sent_positions
+                                )
+
+                                if retry_ret.get("ok", False):
+                                    logger.info(
+                                        "[CONTROL THREAD] Maintained previous joint command after failure"
+                                    )
+                                else:
+                                    logger.error(
+                                        "[CONTROL THREAD] Retry with last joint command failed: %s",
+                                        retry_ret.get("err", "unknown error"),
+                                    )
+                            elif stop_event.is_set():
+                                logger.debug(
+                                    "[CONTROL THREAD] Skipping joint command retry because stop event is set"
+                                )
+                            else:
+                                logger.debug(
+                                    "[CONTROL THREAD] No previous joint command available for retry"
+                                )
                     
                     # 5) 在仿真模式下更新仿真位置
             
@@ -1017,10 +1069,11 @@ class HardwareTeleopController:
                             f"current_pos_norm={np.linalg.norm(current_pos_deg):.1f}° "
                             f"loop={avg_ctrl:.1f}ms")
                     last_status_time = now
+                
 
             except Exception as e:
                 print(f"Error in control thread: {e}")
-
+            print(f"[CONTROL THREAD09] end time {time.time()-thread_start:4f}")
             # 定频
             elapsed = time.time() - loop_start
             self.control_loop_times.append(elapsed)
@@ -1228,7 +1281,7 @@ if __name__ == "__main__":
             R_headset_world=R_headset_world,
             scale_factor=1.0,
             visualize_placo=True,
-            ik_rate_hz=600,
+            ik_rate_hz=500,
             enable_log_data=False,
             log_dir="teleop_logs",
             log_freq=50.0,

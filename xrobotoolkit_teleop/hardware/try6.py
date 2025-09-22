@@ -44,11 +44,7 @@ try:
         # 你的需求：把第 3 关节（index=2）目标设为 19 度
 
         cmd_pos = position.copy()
-        if time.time()-last_time>0.02:
-            target_pos+=0.2
-            print(target_pos)
-            last_time =time.time()
-        cmd_pos[2]=target_pos
+        cmd_pos[2]-=0.4
         robot.send_joint_positions_udp(cmd_pos)
 
         # 记录
@@ -115,3 +111,5 @@ finally:
 #joint6:150deg/s 5deg
 #joint7:140deg/s 5deg
 
+#joint1 >0.1
+#joint2 >0.02

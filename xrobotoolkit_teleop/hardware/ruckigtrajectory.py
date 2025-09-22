@@ -290,13 +290,23 @@ class RuckigTrajectoryPlanner:
         # Apply low-pass filter
         filtered_waypoint = self._apply_waypoint_filter(raw_waypoint)
         beta = self.waypoint_blend_beta
-        if beta < 1.0:
-            if current_position is None:
-                return filtered_waypoint.copy()
-            else:
-                current = np.array(current_position, dtype=float)
-            filtered_waypoint = beta * filtered_waypoint + (1.0 - beta) * current
-
+        if beta < 1.0 and current_position is not None:
+            current = np.array(current_position, dtype=float)
+            
+            # 确保角度连续性：调整filtered_waypoint使其与current_position最接近
+            adjusted_waypoint = np.array([
+                self.to_nearest_equivalent_angle(filtered_waypoint[i], current[i])
+                for i in range(self.dof)
+            ])
+            
+            # 执行融合：beta越大越接近目标waypoint，beta越小越接近当前位置
+            blended_waypoint = beta * adjusted_waypoint + (1.0 - beta) * current
+            
+            # 归一化角度到0-360范围（如果需要的话）
+            # blended_waypoint = blended_waypoint % 360.0
+            
+            return blended_waypoint
+        
         return filtered_waypoint.copy()
     
     def estimate_target_velocity(self) -> np.ndarray:#waypoint线程要快一点，500吧
